@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: packages/agent-mail/npm-shrinkwrap.json
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential shellcheck
+      - name: Install exact dependencies
+        working-directory: packages/agent-mail
+        run: npm ci
+      - name: Lint
+        working-directory: packages/agent-mail
+        run: npm run lint
+      - name: Typecheck
+        working-directory: packages/agent-mail
+        run: npm run typecheck
+      - name: Build
+        working-directory: packages/agent-mail
+        run: npm run build
+      - name: Test
+        working-directory: packages/agent-mail
+        run: npm test
+      - name: TypeScript contract gate
+        env:
+          SKIP_NPM_CI: "1"
+        run: bash scripts/run_contracts_ts.sh
+      - name: Release artifact dry run
+        run: |
+          bash scripts/release_check_ts.sh
+          bash scripts/build-release-artifacts.sh dist

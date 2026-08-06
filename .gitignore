@@ -1,0 +1,21 @@
+# Node / TypeScript
+node_modules/
+packages/*/dist/
+.vite/
+*.tsbuildinfo
+
+# Runtime agent-mail data (project-local)
+.agent-mail/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Env secrets
+.env
+.env.*
+!.env.example

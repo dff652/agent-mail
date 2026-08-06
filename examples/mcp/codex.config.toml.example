@@ -1,0 +1,12 @@
+# Copy to <project>/.codex/config.toml and replace every absolute path.
+[mcp_servers.agent-mail]
+command = "/absolute/path/to/node/bin/agent-mail-mcp"
+args = []
+cwd = "/absolute/path/to/your-project"
+required = true
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+
+[mcp_servers.agent-mail.env]
+AGENT_MAIL_HOME = "/absolute/path/to/your-project/.agent-mail"
+AGENT_MAIL_ID = "codex@local"

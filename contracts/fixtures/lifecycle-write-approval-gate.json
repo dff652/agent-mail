@@ -1,0 +1,86 @@
+{
+  "id": "lifecycle.write_approval_gate",
+  "description": "approve-writes: a write task cannot reach completed while its approval is pending; approving unblocks done",
+  "agents": ["claude-code@local", "codex@local", "human@local"],
+  "steps": [
+    {
+      "op": "send",
+      "save_as": "task_msg",
+      "from": "claude-code@local",
+      "to": "codex@local",
+      "type": "task",
+      "body": "Rewrite the auth middleware",
+      "effect": "write"
+    },
+    {
+      "op": "assert",
+      "check": "requires_human_approval",
+      "ref": "task_msg",
+      "expect": true
+    },
+    {
+      "op": "assert",
+      "check": "approval_status",
+      "ref": "task_msg",
+      "expect": "pending"
+    },
+    {
+      "op": "claim",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "claimed"
+    },
+    {
+      "op": "send",
+      "from": "codex@local",
+      "to": "claude-code@local",
+      "type": "done",
+      "body": "rewritten",
+      "thread_from": "task_msg",
+      "task_from": "task_msg",
+      "expect_error": {
+        "match": "approval is pending",
+        "exit_code": 6
+      }
+    },
+    {
+      "op": "assert",
+      "check": "task_status",
+      "ref": "task_msg",
+      "expect": "in_progress"
+    },
+    {
+      "op": "approve",
+      "task_ref": "task_msg",
+      "actor": "human@local"
+    },
+    {
+      "op": "assert",
+      "check": "approval_status",
+      "ref": "task_msg",
+      "expect": "approved"
+    },
+    {
+      "op": "send",
+      "save_as": "done_msg",
+      "from": "codex@local",
+      "to": "claude-code@local",
+      "type": "done",
+      "body": "rewritten",
+      "thread_from": "task_msg",
+      "task_from": "task_msg"
+    },
+    {
+      "op": "assert",
+      "check": "task_status",
+      "ref": "task_msg",
+      "expect": "completed"
+    },
+    {
+      "op": "ack",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "acked"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "version": "0.1",
+  "settings": [
+    {
+      "key": "project.lease_seconds",
+      "group": "Project",
+      "type": "integer",
+      "default": 3600,
+      "minimum": 1,
+      "authority": "config.json",
+      "mirrors": [],
+      "scope": "project",
+      "danger": "low",
+      "writable": true,
+      "cli": "agent-mail config set project.lease_seconds <seconds>",
+      "summary": "Claim lease duration in seconds",
+      "since": "0.1"
+    },
+    {
+      "key": "policy.default_execution_mode",
+      "group": "Policy & Approval",
+      "type": "enum",
+      "values": [
+        "autonomous",
+        "approve-writes",
+        "view-only"
+      ],
+      "default": "approve-writes",
+      "authority": "policy.yaml",
+      "mirrors": [
+        "config.json"
+      ],
+      "scope": "project",
+      "danger": "medium",
+      "writable": true,
+      "cli": "agent-mail config set policy.default_execution_mode <mode>",
+      "summary": "Default execution and human-approval mode",
+      "since": "0.1"
+    },
+    {
+      "key": "policy.roster_mode",
+      "group": "Policy & Approval",
+      "type": "enum",
+      "values": [
+        "open",
+        "allowlist"
+      ],
+      "default": "open",
+      "authority": "policy.yaml",
+      "mirrors": [
+        "config.json"
+      ],
+      "scope": "project",
+      "danger": "medium",
+      "writable": true,
+      "cli": "agent-mail config set policy.roster_mode <mode>",
+      "summary": "Whether sends are open to the roster or limited by allow_edges",
+      "since": "0.1"
+    },
+    {
+      "key": "policy.effect_rules",
+      "group": "Policy & Approval",
+      "type": "object",
+      "default": {
+        "write": "requires_human_approval",
+        "dangerous": "requires_human_approval"
+      },
+      "authority": "policy.yaml",
+      "mirrors": [],
+      "scope": "project",
+      "danger": "high",
+      "writable": true,
+      "cli": "agent-mail config set policy.effect_rules '<json-object>'",
+      "summary": "Human-approval rules keyed by effect level",
+      "since": "0.1"
+    },
+    {
+      "key": "policy.allow_edges",
+      "group": "Policy & Approval",
+      "type": "array",
+      "default": [],
+      "authority": "policy.yaml",
+      "mirrors": [],
+      "scope": "project",
+      "danger": "high",
+      "writable": true,
+      "cli": "agent-mail config set policy.allow_edges '<json-array>'",
+      "summary": "Allowed sender, recipient, and message-type edges in allowlist mode",
+      "since": "0.1"
+    }
+  ]
+}

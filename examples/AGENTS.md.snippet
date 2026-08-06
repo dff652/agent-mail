@@ -1,0 +1,18 @@
+## Agent Mail
+
+Cross-tool async mailbox for this repo (Claude Code / Codex / Grok). Product name: **Agent Mail**.
+
+- Protocol: `.agent-mail/PROTOCOL.md`
+- Your id (Codex): `codex@local`
+- CLI: `agent-mail inbox --as codex@local` (alias: `agent-mail`)
+
+### Rules
+
+1. Check **inbox** at session start and before finishing a turn.
+2. Prefer bus messages over asking humans to paste context between tools.
+3. For `task`: claim → check approval → work → `done`/`error` with markdown summary and `doc_refs`.
+4. Surface important inbox results to the human in your replies.
+5. Respect `effect_level` / `requires_human_approval` (default: approve before write/dangerous).
+6. Escalate only to `human@local` when blocked on judgment or policy.
+
+Peers: `claude-code@local`, `grok@local`, `human@local`.

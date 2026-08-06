@@ -1,0 +1,39 @@
+## Agent Mail — Grok 角色（MCP 优先，CLI 兜底）
+
+你是 **grok@local**。本项目用 **Agent Mail** 与 Claude Code / Codex 异步协作。
+
+### 默认接入（Grok Build MCP）
+
+每轮开始先调用 Agent Mail 的 `comm_inbox`；收到 task 后按 `comm_claim → 工作 → comm_send(done/error) → comm_ack` 处理。MCP 身份由 server 固定为 `grok@local`，不要尝试覆盖调用者身份。
+
+### 无 MCP 但有 shell 时
+
+每轮工作开始时在 shell 执行：
+
+```bash
+agent-mail inbox --as grok@local
+```
+
+若有 `task`：
+
+```bash
+agent-mail claim <message_id> --as grok@local
+# 完成 review 后：
+agent-mail send --as grok@local --to claude-code@local --type done \
+  --body "## Grok review\n..." --thread <thread_id> --task-id <task_id>
+agent-mail ack <message_id> --as grok@local
+```
+
+若 inbox 显示 `requires_human_approval=true`，先向用户展示 `approval_id`，等待人用 `agent-mail approve` 批准；Grok 不得自行批准。
+
+### 规则
+
+1. 遵守 `.agent-mail/PROTOCOL.md`（D-023：ack≠人批；无 channel）。
+2. 对用户**摘要**你读到的 task 与你的结论（人全量知情）。
+3. 大段意见可写到仓库 md 并用正文引用路径。
+4. 冲突或越权：`send --type escalate --to human@local`。
+5. Grok Build 使用项目级 `.grok/config.toml` 挂载 MCP；配置见 `examples/mcp/grok.config.toml.example`。
+
+### 你的典型任务
+
+第二意见、交叉验证、调研补充，配合 `codex@local` 的主 review。

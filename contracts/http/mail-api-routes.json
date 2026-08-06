@@ -1,0 +1,20 @@
+{
+  "description": "Authenticated Mail Data API surface (L1). Paths and methods are part of the public contract.",
+  "base": "/v1/mail",
+  "auth": "Bearer user hub-token (not federation peer token)",
+  "routes": [
+    { "method": "GET", "path": "/v1/mail/me", "notes": "token-bound identity" },
+    { "method": "GET", "path": "/v1/mail/agents", "notes": "roster snapshot" },
+    { "method": "GET", "path": "/v1/mail/inbox", "notes": "query unread optional" },
+    { "method": "POST", "path": "/v1/mail/messages", "notes": "send; body must not override token identity" },
+    { "method": "POST", "path": "/v1/mail/messages/{message_id}/claim", "notes": "lease claim" },
+    { "method": "POST", "path": "/v1/mail/messages/{message_id}/ack", "notes": "delivery ack after terminal task" },
+    { "method": "GET", "path": "/v1/mail/threads/{thread_id}", "notes": "thread messages" },
+    { "method": "POST", "path": "/v1/mail/tasks/{task_id}/done", "notes": "task terminal" },
+    { "method": "POST", "path": "/v1/mail/tasks/{task_id}/error", "notes": "task terminal" },
+    { "method": "POST", "path": "/v1/mail/tasks/{task_id}/cancel", "notes": "task terminal" },
+    { "method": "GET", "path": "/v1/mail/approvals", "notes": "list approvals" },
+    { "method": "POST", "path": "/v1/mail/approvals/{approval_id}/approve", "notes": "human approve" },
+    { "method": "POST", "path": "/v1/mail/approvals/{approval_id}/reject", "notes": "human reject" }
+  ]
+}

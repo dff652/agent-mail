@@ -1,0 +1,71 @@
+{
+  "name": "agent-mail",
+  "version": "1.0.0-alpha.4",
+  "description": "Agent Mail — TypeScript CLI/MCP/Hub (async agent mailbox)",
+  "type": "module",
+  "bin": {
+    "agent-mail": "./dist/cli.js",
+    "agent-mail-mcp": "./dist/mcp/stdio.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "refs",
+    "settings.json",
+    "npm-shrinkwrap.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dff652/agent-mail.git",
+    "directory": "packages/agent-mail"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "contracts:check": "tsx scripts/check-contracts.ts",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run build && npm test",
+    "test": "vitest run",
+    "test:contracts": "npm run test:contracts:ts-only",
+    "test:contracts:ts-only": "npm run contracts:check && vitest run test/contract-structure.test.ts test/contracts.test.ts test/cli-verbs-contract.test.ts test/policy.test.ts test/settings.test.ts test/security-contracts.test.ts test/http-wire-contract.test.ts test/hub-wake.test.ts test/hub-tls.test.ts test/federation-worker.test.ts test/recovery.test.ts test/mcp.test.ts",
+    "test:recovery": "vitest run test/recovery.test.ts",
+    "test:watch": "vitest",
+    "cli": "node --import tsx src/cli.ts",
+    "check": "npm run lint && npm run typecheck && npm run build && npm test",
+    "lint": "eslint src scripts test",
+    "typecheck": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "better-sqlite3": "^11.8.1",
+    "yaml": "^2.8.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.0",
+    "ajv": "8.20.0",
+    "eslint": "10.8.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10"
+  },
+  "license": "Apache-2.0"
+}

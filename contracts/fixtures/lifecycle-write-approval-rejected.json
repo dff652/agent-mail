@@ -1,0 +1,68 @@
+{
+  "id": "lifecycle.write_approval_rejected",
+  "description": "A rejected approval blocks done forever but leaves error/ack available, so the task never deadlocks",
+  "agents": ["claude-code@local", "codex@local", "human@local"],
+  "steps": [
+    {
+      "op": "send",
+      "save_as": "task_msg",
+      "from": "claude-code@local",
+      "to": "codex@local",
+      "type": "task",
+      "body": "Delete the legacy tables",
+      "effect": "write"
+    },
+    {
+      "op": "claim",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "claimed"
+    },
+    {
+      "op": "reject",
+      "task_ref": "task_msg",
+      "actor": "human@local"
+    },
+    {
+      "op": "assert",
+      "check": "approval_status",
+      "ref": "task_msg",
+      "expect": "rejected"
+    },
+    {
+      "op": "send",
+      "from": "codex@local",
+      "to": "claude-code@local",
+      "type": "done",
+      "body": "deleted anyway",
+      "thread_from": "task_msg",
+      "task_from": "task_msg",
+      "expect_error": {
+        "match": "approval is rejected",
+        "exit_code": 6
+      }
+    },
+    {
+      "op": "send",
+      "save_as": "error_msg",
+      "from": "codex@local",
+      "to": "claude-code@local",
+      "type": "error",
+      "body": "human rejected the approval",
+      "thread_from": "task_msg",
+      "task_from": "task_msg"
+    },
+    {
+      "op": "assert",
+      "check": "task_status",
+      "ref": "task_msg",
+      "expect": "failed"
+    },
+    {
+      "op": "ack",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "acked"
+    }
+  ]
+}

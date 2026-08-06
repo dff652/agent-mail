@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.agent-mail/schemas/message/v0.2.json",
+  "title": "AgentMailMessage",
+  "description": "Agent Mail immutable message envelope v0.2 (D-023). Delivery/task/approval are separate records.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "ts", "from", "to", "type", "body_md"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^msg_[A-Za-z0-9_-]+$"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "from": {
+      "type": "string",
+      "description": "Sender agent_id name@scope",
+      "pattern": "^[a-z0-9][a-z0-9._-]*@[a-z0-9][a-z0-9._-]*$"
+    },
+    "to": {
+      "type": "string",
+      "description": "Recipient agent_id only (M1: no channel, D-024)",
+      "pattern": "^[a-z0-9][a-z0-9._-]*@[a-z0-9][a-z0-9._-]*$"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "message",
+        "task",
+        "done",
+        "error",
+        "question",
+        "escalate",
+        "status",
+        "cancel"
+      ]
+    },
+    "thread_id": {
+      "type": ["string", "null"],
+      "pattern": "^thr_[A-Za-z0-9_-]+$"
+    },
+    "in_reply_to": {
+      "type": ["string", "null"]
+    },
+    "task_id": {
+      "type": ["string", "null"],
+      "description": "Related task id when type is done/error/cancel/status",
+      "pattern": "^tsk_[A-Za-z0-9_-]+$"
+    },
+    "body_md": {
+      "type": "string"
+    },
+    "doc_refs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "effect_level": {
+      "type": "string",
+      "enum": ["none", "read", "write", "dangerous"],
+      "default": "none"
+    },
+    "requires_human_approval": {
+      "type": "boolean",
+      "default": false,
+      "description": "Human approval gate (not delivery ack). D-023."
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": { "type": "string", "default": "0.2" }
+      }
+    }
+  }
+}

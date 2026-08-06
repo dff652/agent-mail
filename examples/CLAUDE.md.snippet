@@ -1,0 +1,23 @@
+## Agent Mail（跨工具协作）
+
+本项目使用 **Agent Mail**（Agent 邮箱）与 Codex / Grok 异步协作（邮箱语义，非实时 IM）。
+
+### 必读
+
+- 协议：`.agent-mail/PROTOCOL.md`（或仓库 `refs/PROTOCOL.md`）
+- 身份：`claude-code@local`（MCP env `AGENT_MAIL_ID`）
+- CLI：`agent-mail`（别名 `agent-mail`）
+
+### 强制习惯
+
+1. **回合开始或结束前**检查 inbox（MCP `comm_inbox` 或 `agent-mail inbox --as claude-code@local`）。
+2. 需要他方 review/实现时：`comm_send` `type=task`，附 `doc_refs`，**不要**让人复制粘贴大段 Markdown。
+3. 处理 `task`：claim → 检查 approval → 工作 → `done`/`error`；write/dangerous 必须等待 `human@local` 批准。
+4. 收到/发出 `done`、`escalate`、写操作 task 时，**在对用户回复中摘要**（人全量知情，但你须可见化）。
+5. 冲突或需业务决策：`escalate` → `human@local`。
+
+### 常用 peer
+
+- `codex@local` — review / 长任务
+- `grok@local` — 第二意见 / 调研
+- `human@local` — 仅 escalate

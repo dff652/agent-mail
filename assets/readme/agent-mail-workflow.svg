@@ -1,0 +1,198 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="520" viewBox="0 0 1200 520"
+     role="img" aria-labelledby="title desc"
+     font-family="'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title id="title">Agent Mail 五步使用流程</title>
+  <desc id="desc">安装 TypeScript 主线，初始化并检查项目，给 Claude Codex Grok 接入 MCP，在原会话中让 Agent 协作，最后由人通过 TUI 管理并用 CLI 恢复。</desc>
+
+  <defs>
+    <marker id="workflow-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4FD1C5"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="520" rx="28" fill="#07111F"/>
+
+  <g id="heading" transform="translate(56 52)">
+    <text x="0" y="0"
+          fill="#4FD1C5"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" font-weight="700" letter-spacing="2">
+      THE LOCAL-FIRST PRIMARY PATH
+    </text>
+    <text x="0" y="62"
+          fill="#F7FAFC"
+          font-size="43" font-weight="700">
+      从安装到协作，五步建立可控闭环
+    </text>
+    <text x="0" y="103"
+          fill="#93A4B8"
+          font-size="21" font-weight="400">
+      对话留在 AI 原会话 · 通信走 MCP · TUI 管理 · CLI 恢复
+    </text>
+  </g>
+
+  <g id="connectors" fill="none" stroke="#4FD1C5" stroke-width="3">
+    <path d="M 256 325 H 268" marker-end="url(#workflow-arrow)"/>
+    <path d="M 480 325 H 492" marker-end="url(#workflow-arrow)"/>
+    <path d="M 704 325 H 716" marker-end="url(#workflow-arrow)"/>
+    <path d="M 928 325 H 940" marker-end="url(#workflow-arrow)"/>
+  </g>
+
+  <g id="step-install">
+    <rect x="48" y="182" width="208" height="286" rx="22"
+          fill="#0D1B2A" stroke="#294158" stroke-width="2"/>
+    <text x="70" y="218"
+          fill="#4FD1C5"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" font-weight="700">01 / INSTALL</text>
+
+    <g fill="none" stroke="#D7E2EC" stroke-width="3"
+       stroke-linecap="round" stroke-linejoin="round">
+      <rect x="111" y="248" width="82" height="66" rx="12"/>
+      <path d="M 125 266 H 179 M 125 281 H 166 M 125 296 H 154"/>
+      <path d="M 178 236 V 259 M 168 249 L 178 259 L 188 249"
+            stroke="#4FD1C5"/>
+    </g>
+
+    <text x="152" y="356" text-anchor="middle"
+          fill="#F7FAFC"
+          font-size="27" font-weight="700">安装主线</text>
+    <text x="152" y="396" text-anchor="middle"
+          fill="#93A4B8"
+          font-size="18" font-weight="400">Node 20+ · TS package</text>
+    <text x="152" y="424" text-anchor="middle"
+          fill="#71879D"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18">agent-mail version</text>
+  </g>
+
+  <g id="step-init">
+    <rect x="272" y="182" width="208" height="286" rx="22"
+          fill="#0D1B2A" stroke="#294158" stroke-width="2"/>
+    <text x="294" y="218"
+          fill="#4FD1C5"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" font-weight="700">02 / INIT</text>
+
+    <g fill="none" stroke="#D7E2EC" stroke-width="3"
+       stroke-linecap="round" stroke-linejoin="round">
+      <ellipse cx="376" cy="255" rx="43" ry="16"/>
+      <path d="M 333 255 V 299 C 333 308 352 315 376 315 C 400 315 419 308 419 299 V 255"/>
+      <path d="M 333 277 C 333 286 352 293 376 293 C 400 293 419 286 419 277"/>
+      <path d="M 392 297 L 401 306 L 419 284" stroke="#4FD1C5"/>
+    </g>
+
+    <text x="376" y="356" text-anchor="middle"
+          fill="#F7FAFC"
+          font-size="27" font-weight="700">初始化项目</text>
+    <text x="376" y="396" text-anchor="middle"
+          fill="#93A4B8"
+          font-size="18" font-weight="400">权威 home · SQLite</text>
+    <text x="376" y="424" text-anchor="middle"
+          fill="#71879D"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18">init + doctor</text>
+  </g>
+
+  <g id="step-connect">
+    <rect x="496" y="182" width="208" height="286" rx="22"
+          fill="#0D1B2A" stroke="#294158" stroke-width="2"/>
+    <text x="518" y="218"
+          fill="#4FD1C5"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" font-weight="700">03 / CONNECT</text>
+
+    <g fill="none" stroke="#D7E2EC" stroke-width="3"
+       stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="550" cy="263" r="13"/>
+      <circle cx="600" cy="248" r="13"/>
+      <circle cx="650" cy="263" r="13"/>
+      <path d="M 550 276 V 294 H 600 M 650 276 V 294 H 600 M 600 261 V 281"/>
+      <rect x="560" y="281" width="80" height="38" rx="12"
+            fill="#10232F" stroke="#4FD1C5"/>
+    </g>
+    <text x="600" y="307" text-anchor="middle"
+          fill="#4FD1C5"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" font-weight="700">MCP</text>
+
+    <text x="600" y="356" text-anchor="middle"
+          fill="#F7FAFC"
+          font-size="27" font-weight="700">接入 AI 工具</text>
+    <text x="600" y="396" text-anchor="middle"
+          fill="#93A4B8"
+          font-size="18" font-weight="400">Claude · Codex · Grok</text>
+    <text x="600" y="424" text-anchor="middle"
+          fill="#71879D"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18">shared mailbox</text>
+  </g>
+
+  <g id="step-collaborate">
+    <rect x="720" y="182" width="208" height="286" rx="22"
+          fill="#102B36" stroke="#4FD1C5" stroke-width="3"/>
+    <text x="742" y="218"
+          fill="#4FD1C5"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" font-weight="700">04 / COLLAB</text>
+
+    <g fill="none" stroke="#F7FAFC" stroke-width="3"
+       stroke-linecap="round" stroke-linejoin="round">
+      <rect x="770" y="250" width="108" height="70" rx="14"/>
+      <path d="M 786 268 L 824 291 L 862 268"/>
+      <path d="M 786 304 L 807 286 M 862 304 L 841 286" stroke="#4FD1C5"/>
+      <path d="M 758 281 H 738 M 890 281 H 910" stroke="#4FD1C5"/>
+      <path d="M 746 272 L 737 281 L 746 290 M 902 272 L 911 281 L 902 290"
+            stroke="#4FD1C5"/>
+    </g>
+
+    <text x="824" y="356" text-anchor="middle"
+          fill="#F7FAFC"
+          font-size="27" font-weight="700">原会话协作</text>
+    <text x="824" y="396" text-anchor="middle"
+          fill="#D7E2EC"
+          font-size="18" font-weight="400">Agent 自己收发与执行</text>
+    <text x="824" y="424" text-anchor="middle"
+          fill="#4FD1C5"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18">send · claim · ack</text>
+  </g>
+
+  <g id="step-control">
+    <rect x="944" y="182" width="208" height="286" rx="22"
+          fill="#0D1B2A" stroke="#F6C453" stroke-width="3"
+          stroke-dasharray="10 8"/>
+    <text x="966" y="218"
+          fill="#F6C453"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18" font-weight="700">05 / HUMAN</text>
+
+    <g fill="none" stroke="#D7E2EC" stroke-width="3"
+       stroke-linecap="round" stroke-linejoin="round">
+      <rect x="994" y="248" width="108" height="72" rx="14"/>
+      <path d="M 1010 268 H 1052 M 1010 284 H 1038 M 1010 300 H 1060"/>
+      <circle cx="1091" cy="301" r="20" fill="#F6C453" stroke="#07111F"/>
+      <path d="M 1082 301 L 1089 308 L 1101 293" stroke="#07111F" stroke-width="4"/>
+    </g>
+
+    <text x="1048" y="356" text-anchor="middle"
+          fill="#F7FAFC"
+          font-size="27" font-weight="700">人类控制面</text>
+    <text x="1048" y="396" text-anchor="middle"
+          fill="#93A4B8"
+          font-size="18" font-weight="400">TUI 状态 · Settings</text>
+    <text x="1048" y="424" text-anchor="middle"
+          fill="#F6C453"
+          font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+          font-size="18">CLI ops / recovery</text>
+  </g>
+
+  <text x="600" y="496" text-anchor="middle"
+        fill="#71879D"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="17">
+    PRIMARY PATH · TUI S1 = OVERVIEW + SETTINGS · APPROVALS / WORK / ACTIVITY ARE PLANNED
+  </text>
+</svg>

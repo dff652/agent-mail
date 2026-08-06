@@ -1,0 +1,154 @@
+{
+  "schema_version": "1.0",
+  "description": "Language-neutral HTTP wire contract for Agent Mail clients and hubs.",
+  "health": {
+    "method": "GET",
+    "path": "/healthz",
+    "success_status": 200,
+    "degraded_status": 503,
+    "required_fields": ["status", "database", "auth_required", "tls"]
+  },
+  "errors": {
+    "content_type": "application/json",
+    "required_fields": ["error"]
+  },
+  "pairing": {
+    "redeem": {
+      "method": "POST",
+      "path": "/v1/pair/redeem",
+      "success_status": 200,
+      "required_response_fields": ["pair_id", "agent_id", "token"]
+    }
+  },
+  "mail": {
+    "send": {
+      "method": "POST",
+      "path": "/v1/mail/messages",
+      "created_status": 201,
+      "duplicate_status": 200,
+      "canonical_approval_field": "requires_human_approval",
+      "legacy_approval_alias": "require_approval",
+      "required_response_fields": [
+        "id",
+        "from",
+        "to",
+        "type",
+        "thread_id",
+        "task_id",
+        "in_reply_to",
+        "body_md",
+        "effect_level",
+        "requires_human_approval",
+        "doc_refs",
+        "ts",
+        "approval_id",
+        "duplicate"
+      ]
+    },
+    "inbox_item_required_fields": [
+      "message_id",
+      "type",
+      "from",
+      "to",
+      "body_md",
+      "thread_id",
+      "task_id",
+      "delivery_status",
+      "effect_level",
+      "requires_human_approval",
+      "approval_id",
+      "approval_status",
+      "claim_by",
+      "claim_until"
+    ],
+    "task_terminal_created_status": 201,
+    "approval_required_fields": [
+      "id",
+      "message_id",
+      "task_id",
+      "requested_for",
+      "status",
+      "decided_by",
+      "decided_at",
+      "note",
+      "created_at"
+    ]
+  },
+  "wake": {
+    "webhook": {
+      "method": "POST",
+      "path": "/v1/webhook",
+      "max_request_bytes": 16384,
+      "signature_algorithm": "HMAC-SHA256",
+      "signature_input": "{timestamp}.{nonce}.{raw_body}",
+      "timestamp_header": "X-Agent-Mail-Timestamp",
+      "nonce_header": "X-Agent-Mail-Nonce",
+      "signature_header": "X-Agent-Mail-Signature",
+      "skew_seconds": 300,
+      "nonce_max_chars": 128,
+      "nonce_encoding": "printable ASCII",
+      "required_request_fields": ["recipient"],
+      "success_status": 200,
+      "replay_status": 400,
+      "auth_failure_status": 401,
+      "required_response_fields": [
+        "status",
+        "recipient",
+        "backfilled_events",
+        "open_inbox",
+        "max_outbox_hint",
+        "note"
+      ],
+      "body_free": true
+    },
+    "sse": {
+      "method": "GET",
+      "path": "/v1/events",
+      "content_type": "text/event-stream",
+      "query": ["recipient", "consumer", "after", "limit", "wait"],
+      "limit_min": 1,
+      "limit_max": 1000,
+      "wait_min_seconds": 0,
+      "wait_max_seconds": 30,
+      "max_response_bytes": 65536,
+      "required_event_fields": [
+        "sequence",
+        "id",
+        "ts",
+        "kind",
+        "recipient",
+        "message_id",
+        "payload"
+      ],
+      "body_free": true
+    }
+  },
+  "federation": {
+    "pull": {
+      "method": "GET",
+      "path": "/v1/federation/pull",
+      "query": ["domain", "after", "limit"],
+      "limit_min": 1,
+      "limit_max": 1000,
+      "required_response_fields": ["envelopes", "next_cursor", "peer"]
+    },
+    "ack": {
+      "method": "POST",
+      "path": "/v1/federation/ack",
+      "required_request_fields": ["message_ids"],
+      "optional_request_fields": ["receiver_domain"],
+      "required_response_fields": ["acked", "peer"],
+      "acked_type": "string[]",
+      "peer_scoped": true
+    },
+    "push": {
+      "method": "POST",
+      "path": "/v1/federation/push",
+      "required_request_fields": ["envelope"],
+      "imported_status": 201,
+      "duplicate_status": 200,
+      "domain_mismatch_status": 409,
+      "required_response_fields": ["status", "peer"]
+    }
+  }
+}

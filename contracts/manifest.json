@@ -1,0 +1,36 @@
+{
+  "name": "agent-mail-contracts",
+  "version": "0.1.0-r0",
+  "protocol": "0.2",
+  "description": "Language-neutral contracts for the Agent Mail TypeScript implementation",
+  "schemas": {
+    "message": "refs/message.schema.json",
+    "roster": "refs/roster.schema.json",
+    "protocol": "refs/PROTOCOL.md",
+    "settings": "contracts/settings.schema.json"
+  },
+  "settings": [
+    "settings.json"
+  ],
+  "fixtures": [
+    "fixtures/lifecycle-task-claim-done-ack.json",
+    "fixtures/lifecycle-ack-before-terminal.json",
+    "fixtures/lifecycle-claim-wrong-recipient.json",
+    "fixtures/lifecycle-write-approval-gate.json",
+    "fixtures/lifecycle-write-approval-rejected.json"
+  ],
+  "policy_fixtures": [
+    "fixtures/policy-send-decisions.json"
+  ],
+  "mcp": [
+    "mcp/tools.json"
+  ],
+  "http": [
+    "http/mail-api-routes.json",
+    "http/security-negatives.json",
+    "http/wire-contracts.json"
+  ],
+  "cli": [
+    "cli-verbs.json"
+  ]
+}

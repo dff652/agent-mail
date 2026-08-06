@@ -1,0 +1,46 @@
+# User-level systemd unit for the L3 federation push/pull worker.
+#
+# Install (user session):
+#   mkdir -p ~/.config/systemd/user
+#   cp examples/systemd/agent-mail-federation-worker.service ~/.config/systemd/user/
+#   # Edit WorkingDirectory / Environment paths below
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agent-mail-federation-worker.service
+#   journalctl --user -u agent-mail-federation-worker -f
+#
+# Health snapshot (JSON): $AGENT_MAIL_PROJECT/.agent-mail/logs/federation_health.json
+# Operator check: agent-mail federation status --path "$AGENT_MAIL_PROJECT"
+#
+# Env knobs:
+#   AGENT_MAIL_FED_MAX_ATTEMPTS   push failures before dead-letter (default 10)
+#   AGENT_MAIL_FED_LAG_ALERT_SEC  pending age alert threshold (default 300)
+#   AGENT_MAIL_FEDERATION_CA_FILE peer TLS CA (recommended for private CA)
+# Lab only: AGENT_MAIL_FEDERATION_INSECURE_TLS=1
+#
+# This is an example template — Agent Mail does not install or manage systemd.
+
+[Unit]
+Description=Agent Mail L3 federation worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Set to the project root; state is held in its .agent-mail/ directory.
+Environment=AGENT_MAIL_PROJECT=%h
+# Optional: private CA for peer HTTPS
+# Environment=AGENT_MAIL_FEDERATION_CA_FILE=%h/.agent-mail/hub-cert.pem
+# Environment=AGENT_MAIL_FED_MAX_ATTEMPTS=10
+# Environment=AGENT_MAIL_FED_LAG_ALERT_SEC=300
+WorkingDirectory=%h
+ExecStart=/usr/bin/env agent-mail federation worker \
+  --forever \
+  --interval-ms 2000 \
+  --path ${AGENT_MAIL_PROJECT}
+Restart=on-failure
+RestartSec=5
+# Soft resource bounds; adjust for busy hubs
+MemoryMax=256M
+
+[Install]
+WantedBy=default.target

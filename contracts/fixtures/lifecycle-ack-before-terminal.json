@@ -1,0 +1,38 @@
+{
+  "id": "lifecycle.ack_before_terminal",
+  "description": "Ack before done/error must fail; delivery stays claimed",
+  "agents": ["claude-code@local", "codex@local"],
+  "steps": [
+    {
+      "op": "send",
+      "save_as": "task_msg",
+      "from": "claude-code@local",
+      "to": "codex@local",
+      "type": "task",
+      "body": "do not ack early",
+      "effect": "read"
+    },
+    {
+      "op": "claim",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "claimed"
+    },
+    {
+      "op": "ack",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_error": {
+        "match": "send done/error before ack",
+        "exit_code": 5
+      }
+    },
+    {
+      "op": "assert",
+      "check": "delivery_status",
+      "ref": "task_msg",
+      "agent": "codex@local",
+      "expect": "claimed"
+    }
+  ]
+}

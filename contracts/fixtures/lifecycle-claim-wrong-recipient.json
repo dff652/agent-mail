@@ -1,0 +1,38 @@
+{
+  "id": "lifecycle.claim_wrong_recipient",
+  "description": "Non-recipient cannot claim a delivery; owner claim stays claimed",
+  "agents": ["claude-code@local", "codex@local", "grok@local"],
+  "steps": [
+    {
+      "op": "send",
+      "save_as": "task_msg",
+      "from": "claude-code@local",
+      "to": "codex@local",
+      "type": "task",
+      "body": "only codex is recipient",
+      "effect": "read"
+    },
+    {
+      "op": "claim",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "claimed"
+    },
+    {
+      "op": "claim",
+      "message_ref": "task_msg",
+      "agent": "grok@local",
+      "expect_error": {
+        "match": "no delivery",
+        "exit_code": 5
+      }
+    },
+    {
+      "op": "assert",
+      "check": "delivery_status",
+      "ref": "task_msg",
+      "agent": "codex@local",
+      "expect": "claimed"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "description": "MCP tool names and required arguments for the Agent Mail server",
+  "server": "agent-mail",
+  "tools": [
+    {
+      "name": "comm_send",
+      "required": ["to", "type", "body"],
+      "optional": ["thread_id", "task_id", "effect", "requires_human_approval", "in_reply_to"]
+    },
+    {
+      "name": "comm_inbox",
+      "required": [],
+      "optional": ["unread_only"]
+    },
+    {
+      "name": "comm_claim",
+      "required": ["message_id"],
+      "optional": []
+    },
+    {
+      "name": "comm_ack",
+      "required": ["message_id"],
+      "optional": []
+    },
+    {
+      "name": "comm_list_agents",
+      "required": [],
+      "optional": []
+    },
+    {
+      "name": "comm_approve",
+      "required": ["approval_id"],
+      "optional": ["note"]
+    },
+    {
+      "name": "comm_reject",
+      "required": ["approval_id"],
+      "optional": ["note"]
+    },
+    {
+      "name": "comm_approvals",
+      "required": [],
+      "optional": ["status"]
+    },
+    {
+      "name": "comm_tail",
+      "required": [],
+      "optional": ["limit", "thread_id"]
+    },
+    {
+      "name": "comm_events",
+      "required": [],
+      "optional": ["limit", "kind", "actor", "task_id", "thread_id"]
+    },
+    {
+      "name": "comm_diagnose",
+      "required": [],
+      "optional": []
+    }
+  ]
+}

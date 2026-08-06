@@ -1,0 +1,125 @@
+{
+  "description": "User-visible CLI verbs the TypeScript implementation must provide. Capability gaps must fail a gate before release.",
+  "schema_version": "1",
+  "binary": "agent-mail",
+  "verbs": [
+    {
+      "name": "version",
+      "purpose": "print package and runtime version"
+    },
+    {
+      "name": "init",
+      "purpose": "create a project home"
+    },
+    {
+      "name": "doctor",
+      "purpose": "environment and wiring checks"
+    },
+    {
+      "name": "diagnose",
+      "purpose": "control-plane snapshot"
+    },
+    {
+      "name": "logs",
+      "purpose": "read redacted runtime logs"
+    },
+    {
+      "name": "tui",
+      "purpose": "operator console"
+    },
+    {
+      "name": "config",
+      "purpose": "read and write settings"
+    },
+    {
+      "name": "backup",
+      "purpose": "create, verify and restore backups"
+    },
+    {
+      "name": "send",
+      "purpose": "send a message or task"
+    },
+    {
+      "name": "inbox",
+      "purpose": "list deliveries for an agent"
+    },
+    {
+      "name": "claim",
+      "purpose": "claim a delivery"
+    },
+    {
+      "name": "ack",
+      "purpose": "acknowledge a delivery"
+    },
+    {
+      "name": "tail",
+      "purpose": "recent messages or one thread"
+    },
+    {
+      "name": "approve",
+      "purpose": "human approval for a side effect"
+    },
+    {
+      "name": "reject",
+      "purpose": "human rejection for a side effect"
+    },
+    {
+      "name": "approvals",
+      "purpose": "list approval records and ids"
+    },
+    {
+      "name": "agents",
+      "purpose": "list roster agent ids"
+    },
+    {
+      "name": "outbox-backfill",
+      "purpose": "rebuild missing wake hints for a recipient"
+    },
+    {
+      "name": "outbox-purge",
+      "purpose": "delete wake hints at or below each recipient's consumer watermark"
+    },
+    {
+      "name": "events",
+      "purpose": "query body-free lifecycle audit events"
+    },
+    {
+      "name": "mcp",
+      "purpose": "stdio MCP server"
+    },
+    {
+      "name": "hub",
+      "purpose": "run the local Hub"
+    },
+    {
+      "name": "hub-token",
+      "purpose": "mint, rotate and revoke bearer tokens"
+    },
+    {
+      "name": "bridge",
+      "purpose": "wake bridge poller"
+    },
+    {
+      "name": "pair",
+      "purpose": "pairing enrollment"
+    },
+    {
+      "name": "federation",
+      "purpose": "domain, peers and sync"
+    },
+    {
+      "name": "connect",
+      "purpose": "remote Hub connection settings"
+    },
+    {
+      "name": "quickstart",
+      "purpose": "init project home and write pasteable single-agent (or multi-runner) MCP configs"
+    }
+  ],
+  "not_implemented": [
+    {
+      "name": "mode",
+      "reason": "local/remote mode selection is folded into `connect`; no separate verb is planned"
+    }
+  ]
+}

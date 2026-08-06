@@ -1,0 +1,140 @@
+{
+  "version": "0.1",
+  "cases": [
+    {
+      "id": "approve-writes-write-task",
+      "policy": {
+        "default_execution_mode": "approve-writes",
+        "roster_mode": "open",
+        "effect_rules": {
+          "write": "requires_human_approval",
+          "dangerous": "requires_human_approval"
+        },
+        "allow_edges": []
+      },
+      "input": {
+        "from": "claude-code@local",
+        "to": "codex@local",
+        "type": "task",
+        "effect": "write",
+        "caller_requires_approval": false
+      },
+      "expect": {
+        "outcome": "require_approval",
+        "requires_human_approval": true
+      }
+    },
+    {
+      "id": "view-only-denies-write",
+      "policy": {
+        "default_execution_mode": "view-only",
+        "roster_mode": "open",
+        "effect_rules": {},
+        "allow_edges": []
+      },
+      "input": {
+        "from": "claude-code@local",
+        "to": "codex@local",
+        "type": "task",
+        "effect": "write",
+        "caller_requires_approval": false
+      },
+      "expect": {
+        "outcome": "deny",
+        "requires_human_approval": false
+      }
+    },
+    {
+      "id": "autonomous-allows-allowlisted-write",
+      "policy": {
+        "default_execution_mode": "autonomous",
+        "roster_mode": "allowlist",
+        "effect_rules": {},
+        "allow_edges": [
+          {
+            "from": "claude-code@local",
+            "to": "codex@local",
+            "types": ["task"]
+          }
+        ]
+      },
+      "input": {
+        "from": "claude-code@local",
+        "to": "codex@local",
+        "type": "task",
+        "effect": "write",
+        "caller_requires_approval": false
+      },
+      "expect": {
+        "outcome": "allow",
+        "requires_human_approval": false
+      }
+    },
+    {
+      "id": "allowlist-denies-unlisted-edge",
+      "policy": {
+        "default_execution_mode": "autonomous",
+        "roster_mode": "allowlist",
+        "effect_rules": {},
+        "allow_edges": [
+          {
+            "from": "claude-code@local",
+            "to": "codex@local",
+            "types": ["task"]
+          }
+        ]
+      },
+      "input": {
+        "from": "grok@local",
+        "to": "codex@local",
+        "type": "message",
+        "effect": "none",
+        "caller_requires_approval": false
+      },
+      "expect": {
+        "outcome": "deny",
+        "requires_human_approval": false
+      }
+    },
+    {
+      "id": "caller-can-upgrade-read-task",
+      "policy": {
+        "default_execution_mode": "autonomous",
+        "roster_mode": "open",
+        "effect_rules": {},
+        "allow_edges": []
+      },
+      "input": {
+        "from": "claude-code@local",
+        "to": "codex@local",
+        "type": "task",
+        "effect": "read",
+        "caller_requires_approval": true
+      },
+      "expect": {
+        "outcome": "require_approval",
+        "requires_human_approval": true
+      }
+    },
+    {
+      "id": "autonomous-dangerous-still-requires-approval",
+      "policy": {
+        "default_execution_mode": "autonomous",
+        "roster_mode": "open",
+        "effect_rules": {},
+        "allow_edges": []
+      },
+      "input": {
+        "from": "claude-code@local",
+        "to": "codex@local",
+        "type": "task",
+        "effect": "dangerous",
+        "caller_requires_approval": false
+      },
+      "expect": {
+        "outcome": "require_approval",
+        "requires_human_approval": true
+      }
+    }
+  ]
+}

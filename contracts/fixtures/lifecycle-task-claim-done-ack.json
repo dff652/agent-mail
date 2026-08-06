@@ -1,0 +1,61 @@
+{
+  "id": "lifecycle.task_claim_done_ack",
+  "description": "Happy path: task → claim → done → ack; task becomes completed",
+  "agents": ["claude-code@local", "codex@local"],
+  "steps": [
+    {
+      "op": "send",
+      "save_as": "task_msg",
+      "from": "claude-code@local",
+      "to": "codex@local",
+      "type": "task",
+      "body": "Please review auth",
+      "effect": "read"
+    },
+    {
+      "op": "assert",
+      "check": "message_type",
+      "ref": "task_msg",
+      "expect": "task"
+    },
+    {
+      "op": "inbox",
+      "agent": "codex@local",
+      "expect_count": 1
+    },
+    {
+      "op": "claim",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "claimed"
+    },
+    {
+      "op": "send",
+      "save_as": "done_msg",
+      "from": "codex@local",
+      "to": "claude-code@local",
+      "type": "done",
+      "body": "LGTM with nits",
+      "thread_from": "task_msg",
+      "task_from": "task_msg"
+    },
+    {
+      "op": "ack",
+      "message_ref": "task_msg",
+      "agent": "codex@local",
+      "expect_status": "acked"
+    },
+    {
+      "op": "assert",
+      "check": "task_status",
+      "ref": "task_msg",
+      "expect": "completed"
+    },
+    {
+      "op": "assert",
+      "check": "thread_types",
+      "ref": "task_msg",
+      "expect": ["task", "done"]
+    }
+  ]
+}

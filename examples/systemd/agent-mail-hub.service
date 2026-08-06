@@ -1,0 +1,38 @@
+# User-level systemd unit for a long-running Agent Mail Hub.
+#
+# Install (user session):
+#   mkdir -p ~/.config/systemd/user
+#   cp examples/systemd/agent-mail-hub.service ~/.config/systemd/user/
+#   # Edit project root, cert paths, and host/port
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agent-mail-hub.service
+#
+# Non-loopback binds require TLS + at least one hub-token.
+# Pair with agent-mail-federation-worker.service for L3.
+#
+# This is an example template — Agent Mail does not install or manage systemd.
+
+[Unit]
+Description=Agent Mail Hub (L1 / L3)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=AGENT_MAIL_PROJECT=%h
+WorkingDirectory=%h
+# Replace host/port/certs for production. Loopback lab:
+#   agent-mail hub --path $AGENT_MAIL_PROJECT --host 127.0.0.1 --port 7421
+ExecStart=/usr/bin/env agent-mail hub \
+  --path ${AGENT_MAIL_PROJECT} \
+  --host 0.0.0.0 \
+  --port 7421 \
+  --tls-cert ${AGENT_MAIL_PROJECT}/.agent-mail/hub-cert.pem \
+  --tls-key ${AGENT_MAIL_PROJECT}/.agent-mail/hub-key.pem \
+  --require-auth
+Restart=on-failure
+RestartSec=3
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

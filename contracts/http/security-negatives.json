@@ -1,0 +1,77 @@
+{
+  "description": "Security negative cases both implementations MUST enforce. Status codes are HTTP for Hub; local CLI maps to exit_code where noted.",
+  "cases": [
+    {
+      "id": "sec.non_loopback_requires_https",
+      "layer": "hub",
+      "setup": "Hub bind address is not loopback",
+      "action": "client connects with http:// (not https)",
+      "expect": {
+        "reject": true,
+        "notes": "non-loopback MUST force TLS + auth (SECURITY.md)"
+      }
+    },
+    {
+      "id": "sec.missing_bearer",
+      "layer": "http",
+      "action": {
+        "method": "GET",
+        "path": "/v1/mail/me",
+        "headers": {}
+      },
+      "expect": {
+        "status": [401, 403],
+        "notes": "no anonymous mail API"
+      }
+    },
+    {
+      "id": "sec.wrong_bearer",
+      "layer": "http",
+      "action": {
+        "method": "GET",
+        "path": "/v1/mail/me",
+        "headers": { "Authorization": "Bearer not-a-real-token" }
+      },
+      "expect": {
+        "status": [401, 403]
+      }
+    },
+    {
+      "id": "sec.body_cannot_impersonate",
+      "layer": "http",
+      "action": {
+        "method": "POST",
+        "path": "/v1/mail/messages",
+        "headers": { "Authorization": "Bearer <valid-token-for-alice>" },
+        "body": {
+          "from": "bob@local",
+          "to": "codex@local",
+          "type": "message",
+          "body_md": "impersonation attempt"
+        }
+      },
+      "expect": {
+        "reject": true,
+        "notes": "from identity is token-bound; body/query MUST NOT override"
+      }
+    },
+    {
+      "id": "sec.user_token_not_federation_peer",
+      "layer": "http",
+      "action": "use user hub-token against federation peer endpoints",
+      "expect": {
+        "reject": true,
+        "notes": "user bearer ≠ federation peer bearer"
+      }
+    },
+    {
+      "id": "sec.connection_json_no_plaintext_bearer",
+      "layer": "client",
+      "action": "write connection.json with embedded bearer string",
+      "expect": {
+        "reject": true,
+        "notes": "token_file path only; never embed secret in connection.json"
+      }
+    }
+  ]
+}

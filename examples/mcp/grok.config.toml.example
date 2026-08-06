@@ -1,0 +1,9 @@
+# Copy to <project>/.grok/config.toml and replace every absolute path.
+[mcp_servers.agent-mail]
+command = "/absolute/path/to/node/bin/agent-mail-mcp"
+args = []
+enabled = true
+
+[mcp_servers.agent-mail.env]
+AGENT_MAIL_HOME = "/absolute/path/to/your-project/.agent-mail"
+AGENT_MAIL_ID = "grok@local"
