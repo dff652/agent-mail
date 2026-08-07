@@ -89,9 +89,11 @@ npm ci --silent
 info "release installer regression"
 shellcheck "$ROOT/scripts/install-ts.sh" "$ROOT/scripts/test-install-ts.sh" \
   "$ROOT/scripts/build-release-artifacts.sh" \
-  "$ROOT/scripts/test-release-artifact-paths.sh"
+  "$ROOT/scripts/test-release-artifact-paths.sh" \
+  "$ROOT/scripts/test-release-sbom.sh"
 bash "$ROOT/scripts/test-install-ts.sh"
 bash "$ROOT/scripts/test-release-artifact-paths.sh"
+bash "$ROOT/scripts/test-release-sbom.sh"
 
 info "lint"
 npm run --silent lint
