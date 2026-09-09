@@ -58,6 +58,11 @@ export function tokensPath(home: string): string {
   return path.join(path.resolve(home), "auth", "hub_tokens.json");
 }
 
+/** Shared lock for mutations that must coordinate token and roster state. */
+export function hubStateLockPath(home: string): string {
+  return path.join(path.resolve(home), "auth", "hub_state");
+}
+
 export function tokenAuditPath(home: string): string {
   return path.join(path.resolve(home), "auth", "token_audit.jsonl");
 }
@@ -215,6 +220,22 @@ function tokenLock<T>(home: string, fn: () => T): T {
   return withFileLockSync(tokensPath(home), fn);
 }
 
+/**
+ * Serialize Hub-owned token and roster mutations. Enrollment uses this lock
+ * while it performs its cross-file state changes; ordinary operations acquire
+ * it as well so cleanup cannot erase a later independent mutation.
+ */
+export function withHubStateLock<T>(home: string, fn: () => T): T {
+  ensureRealAuthDirectory(home);
+  return withFileLockSync(hubStateLockPath(home), fn);
+}
+
+function withTokenMutation<T>(home: string, fn: () => T): T {
+  // The locked operation owns the token-file lock. Keeping this wrapper at
+  // the shared-lock level avoids a non-reentrant nested token lock.
+  return withHubStateLock(home, fn);
+}
+
 function commitTokenMutation(
   home: string,
   before: TokenRecord[],
@@ -269,6 +290,16 @@ export function mintTokenWithSnapshot(
   label = "",
 ): MintTokenSnapshot {
   const id = validateAgentId(agentId);
+  return withTokenMutation(home, () => mintTokenWithSnapshotLocked(home, id, label));
+}
+
+/** Mint while the caller already holds the shared Hub state lock. */
+export function mintTokenWithSnapshotLocked(
+  home: string,
+  agentId: string,
+  label = "",
+): MintTokenSnapshot {
+  const id = validateAgentId(agentId);
   return tokenLock(home, () => {
     const before = loadTokenRecords(home);
     const generation = 0;
@@ -294,10 +325,60 @@ export function mintTokenWithSnapshot(
 }
 
 /**
+ * Mint a caller-generated token after its hash has been journaled. This is
+ * used by enrollment recovery so a crash cannot leave an unowned credential.
+ */
+export function mintPreparedTokenWithSnapshotLocked(
+  home: string,
+  agentId: string,
+  label: string,
+  token: string,
+  createdAt: string,
+): MintTokenSnapshot {
+  const id = validateAgentId(agentId);
+  if (!/^[\x21-\x7e]{32,512}$/.test(token)) {
+    throw new Error("invalid prepared token");
+  }
+  const parsed = Date.parse(createdAt);
+  if (!Number.isFinite(parsed)) throw new Error("invalid prepared token timestamp");
+  return tokenLock(home, () => {
+    const before = loadTokenRecords(home);
+    if (before.some((record) => record.agent_id === id)) {
+      throw new Error("identity conflict");
+    }
+    const replaced = before.filter((record) => record.agent_id === id);
+    const after = before.filter((record) => record.agent_id !== id);
+    const issuedHash = hashToken(token);
+    after.push({
+      agent_id: id,
+      token_hash: issuedHash,
+      created_at: createdAt,
+      label,
+      generation: 0,
+    });
+    commitTokenMutation(home, before, after, {
+      operation: "mint",
+      agent_id: id,
+      label,
+      generation: 0,
+    });
+    return { token, issued_hash: issuedHash, replaced };
+  });
+}
+
+/**
  * Issue a new token while keeping the newest old token valid.
  * A second rotation drops the oldest token, so at most two remain per agent.
  */
 export function rotateToken(home: string, agentId: string, label = ""): string {
+  const id = validateAgentId(agentId);
+  return withTokenMutation(home, () => {
+    return rotateTokenLocked(home, id, label);
+  });
+}
+
+/** Rotate while the caller already holds the shared Hub state lock. */
+export function rotateTokenLocked(home: string, agentId: string, label = ""): string {
   const id = validateAgentId(agentId);
   return tokenLock(home, () => {
     const before = loadTokenRecords(home);
@@ -330,6 +411,11 @@ export function rotateToken(home: string, agentId: string, label = ""): string {
 /** End the grace window by keeping only the newest token. */
 export function revokePreviousToken(home: string, agentId: string): boolean {
   const id = validateAgentId(agentId);
+  return withTokenMutation(home, () => revokePreviousTokenLocked(home, id));
+}
+
+export function revokePreviousTokenLocked(home: string, agentId: string): boolean {
+  const id = validateAgentId(agentId);
   return tokenLock(home, () => {
     const before = loadTokenRecords(home);
     const mine = before.filter((record) => record.agent_id === id);
@@ -349,6 +435,11 @@ export function revokePreviousToken(home: string, agentId: string): boolean {
 
 /** Revoke all bearer tokens for one agent. */
 export function revokeToken(home: string, agentId: string): boolean {
+  const id = validateAgentId(agentId);
+  return withTokenMutation(home, () => revokeTokenLocked(home, id));
+}
+
+export function revokeTokenLocked(home: string, agentId: string): boolean {
   const id = validateAgentId(agentId);
   return tokenLock(home, () => {
     const before = loadTokenRecords(home);
@@ -372,7 +463,9 @@ export function restoreTokenRecords(
   agentId: string,
   previous: TokenRecord[],
 ): void {
-  restoreTokenRecordsInternal(home, agentId, previous);
+  withTokenMutation(home, () => {
+    restoreTokenRecordsInternal(home, agentId, previous);
+  });
 }
 
 /**
@@ -389,6 +482,28 @@ export function restoreTokenRecordsIfCurrent(
   if (!/^[a-f0-9]{64}$/.test(expectedCurrentHash)) {
     throw new Error("invalid expected token hash for restore");
   }
+  return withTokenMutation(home, () =>
+    restoreTokenRecordsIfCurrentLocked(
+      home,
+      agentId,
+      expectedCurrentHash,
+      previous,
+      onRestoredWhileLocked,
+    ),
+  );
+}
+
+/** Conditional restore while the shared Hub state lock is already held. */
+export function restoreTokenRecordsIfCurrentLocked(
+  home: string,
+  agentId: string,
+  expectedCurrentHash: string,
+  previous: TokenRecord[],
+  onRestoredWhileLocked?: () => void,
+): boolean {
+  if (!/^[a-f0-9]{64}$/.test(expectedCurrentHash)) {
+    throw new Error("invalid expected token hash for restore");
+  }
   return restoreTokenRecordsInternal(
     home,
     agentId,
@@ -396,6 +511,56 @@ export function restoreTokenRecordsIfCurrent(
     expectedCurrentHash,
     onRestoredWhileLocked,
   );
+}
+
+/** Remove only the exact single token owned by an enrollment. */
+export function deleteTokenRecordIfCurrent(
+  home: string,
+  agentId: string,
+  expectedCurrentHash: string,
+  expectedCreatedAt?: string,
+): boolean {
+  return withTokenMutation(home, () =>
+    deleteTokenRecordIfCurrentLocked(
+      home,
+      agentId,
+      expectedCurrentHash,
+      expectedCreatedAt,
+    ),
+  );
+}
+
+/** Conditional token deletion while the shared Hub state lock is held. */
+export function deleteTokenRecordIfCurrentLocked(
+  home: string,
+  agentId: string,
+  expectedCurrentHash: string,
+  expectedCreatedAt?: string,
+): boolean {
+  const id = validateAgentId(agentId);
+  if (!/^[a-f0-9]{64}$/.test(expectedCurrentHash)) {
+    throw new Error("invalid expected token hash for delete");
+  }
+  return tokenLock(home, () => {
+    const before = loadTokenRecords(home);
+    const current = before.filter((record) => record.agent_id === id);
+    if (
+      current.length !== 1 ||
+      current[0]?.token_hash !== expectedCurrentHash ||
+      (expectedCreatedAt !== undefined && current[0]?.created_at !== expectedCreatedAt)
+    ) {
+      return false;
+    }
+    const record = current[0]!;
+    const after = before.filter((item) => item.agent_id !== id);
+    commitTokenMutation(home, before, after, {
+      operation: "revoke",
+      agent_id: id,
+      label: record.label,
+      generation: record.generation,
+    });
+    return true;
+  });
 }
 
 function restoreTokenRecordsInternal(

@@ -26,6 +26,11 @@ export {
   validateHubUrl,
 } from "./connection.js";
 export { RemoteMailClient, openRemoteClient, RemoteMailError } from "./remote-client.js";
+export { ConnectionEnrollmentManager, EnrollmentManagerError } from "./connection-enrollment.js";
+export type { ConnectionEnrollmentManagerOptions, ActivationEvidence } from "./connection-enrollment.js";
+export { createConnectionManagementListener } from "./connection-management.js";
+export type { ConnectionManagementOptions, ManagementAuthorization } from "./connection-management.js";
+export { EnrollmentHubClient, EnrollmentClientError } from "./enrollment-client.js";
 export {
   createBackup,
   restoreBackup,

@@ -11,12 +11,13 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
 import {
-  mintTokenWithSnapshot,
-  restoreTokenRecordsIfCurrent,
+  mintTokenWithSnapshotLocked,
+  restoreTokenRecordsIfCurrentLocked,
+  withHubStateLock,
   type TokenRecord,
 } from "./hub/auth.js";
 import { validateAgentId } from "./ids.js";
-import { ensureAgent, removeAgent } from "./roster.js";
+import { ensureAgentLocked, removeAgentLocked } from "./roster.js";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_RE = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/;
@@ -81,6 +82,19 @@ export interface PairingCompensationResult {
   roster_removed: boolean;
 }
 
+export interface PairingEnrollmentClaim {
+  pair_id: string;
+  agent_id: string;
+  label: string;
+  expires_at: string;
+}
+
+export interface PairingEnrollmentOwner {
+  enrollment_id: string;
+  request_id: string;
+  request_fingerprint: string;
+}
+
 function iso(d = new Date()): string {
   return d.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -127,6 +141,23 @@ function openDb(home: string): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  // Existing pairing stores predate durable enrollment ownership. SQLite has
+  // no IF NOT EXISTS form for ADD COLUMN, so tolerate the already-migrated
+  // case and keep this migration local to the auth database.
+  for (const statement of [
+    "ALTER TABLE pairing_codes ADD COLUMN enrollment_id TEXT",
+    "ALTER TABLE pairing_codes ADD COLUMN enrollment_request_id TEXT",
+    "ALTER TABLE pairing_codes ADD COLUMN enrollment_fingerprint TEXT",
+  ]) {
+    try {
+      db.exec(statement);
+    } catch (error) {
+      if (!String(error).includes("duplicate column name")) throw error;
+    }
+  }
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_pairing_enrollment_owner ON pairing_codes(enrollment_id) WHERE enrollment_id IS NOT NULL",
+  );
   for (const sidecar of [`${p}-wal`, `${p}-shm`]) {
     if (!fs.existsSync(sidecar)) continue;
     try {
@@ -149,6 +180,14 @@ export function generateCode(): string {
     raw += CROCKFORD[randomBytes(1)[0]! % CROCKFORD.length]!;
   }
   return `${raw.slice(0, 4)}-${raw.slice(4)}`;
+}
+
+function normalizeCode(code: string): string {
+  const normalized = code.trim().toUpperCase().replace(/\s+/g, "");
+  if (!CODE_RE.test(normalized)) {
+    throw new PairingError("invalid_or_expired_code");
+  }
+  return normalized;
 }
 
 function lazyExpire(db: Database.Database, nowIso: string): void {
@@ -292,20 +331,163 @@ export function compensateMintedEnrollment(
   previous: TokenRecord[],
   rosterAdded: boolean,
 ): PairingCompensationResult {
+  return withHubStateLock(home, () =>
+    compensateMintedEnrollmentLocked(home, agentId, mintedHash, previous, rosterAdded),
+  );
+}
+
+function compensateMintedEnrollmentLocked(
+  home: string,
+  agentId: string,
+  mintedHash: string,
+  previous: TokenRecord[],
+  rosterAdded: boolean,
+): PairingCompensationResult {
   let rosterRemoved = false;
-  const tokenRestored = restoreTokenRecordsIfCurrent(
+  const tokenRestored = restoreTokenRecordsIfCurrentLocked(
     home,
     agentId,
     mintedHash,
     previous,
     () => {
-      rosterRemoved = rosterAdded ? removeAgent(home, agentId) : false;
+      rosterRemoved = rosterAdded ? removeAgentLocked(home, agentId) : false;
     },
   );
   return {
     token_restored: tokenRestored,
     roster_removed: rosterRemoved,
   };
+}
+
+/**
+ * Reserve a pending pairing code for the durable enrollment protocol. The
+ * existing public redeem path only accepts `pending`, so this state prevents
+ * two protocols from consuming the same code.
+ */
+export function claimPairingForEnrollment(
+  home: string,
+  code: string,
+  owner?: PairingEnrollmentOwner,
+  now = new Date(),
+): PairingEnrollmentClaim {
+  const root = path.resolve(home);
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    throw new PairingError(`not initialized: ${root}`, 3);
+  }
+  const normalized = normalizeCode(code);
+  if (!Number.isFinite(now.getTime())) {
+    throw new PairingError("invalid enrollment time", 3);
+  }
+  const nowIso = iso(now);
+  const db = openDb(root);
+  try {
+    const tx = db.transaction(() => {
+      lazyExpire(db, nowIso);
+      const row = db
+        .prepare("SELECT * FROM pairing_codes WHERE code_hash=?")
+        .get(hashCode(normalized)) as Record<string, unknown> | undefined;
+      if (!row || String(row.status) !== "pending") {
+        throw new PairingError("invalid_or_expired_code");
+      }
+      if (Date.parse(String(row.expires_at)) < now.getTime()) {
+        db.prepare(
+          "UPDATE pairing_codes SET status='expired' WHERE id=? AND status='pending'",
+        ).run(String(row.id));
+        throw new PairingError("invalid_or_expired_code");
+      }
+      const result = db
+        .prepare(
+          `UPDATE pairing_codes SET status='enrollment_pending', enrollment_id=?,
+           enrollment_request_id=?, enrollment_fingerprint=?
+           WHERE id=? AND status='pending'`,
+        )
+        .run(
+          owner?.enrollment_id ?? null,
+          owner?.request_id ?? null,
+          owner?.request_fingerprint ?? null,
+          String(row.id),
+        );
+      if (result.changes !== 1) {
+        throw new PairingError("invalid_or_expired_code");
+      }
+      return {
+        pair_id: String(row.id),
+        agent_id: String(row.agent_id),
+        label: String(row.label || ""),
+        expires_at: String(row.expires_at),
+      } satisfies PairingEnrollmentClaim;
+    });
+    return tx() as PairingEnrollmentClaim;
+  } finally {
+    db.close();
+  }
+}
+
+/** Recover a reservation when the process died after the SQLite claim. */
+export function findPairingEnrollment(
+  home: string,
+  owner: PairingEnrollmentOwner,
+): PairingEnrollmentClaim | null {
+  const db = openDb(path.resolve(home));
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, agent_id, label, expires_at
+         FROM pairing_codes
+         WHERE status='enrollment_pending' AND enrollment_id=?
+           AND enrollment_request_id=? AND enrollment_fingerprint=?`,
+      )
+      .get(owner.enrollment_id, owner.request_id, owner.request_fingerprint) as
+      | Record<string, unknown>
+      | undefined;
+    if (!row) return null;
+    return {
+      pair_id: String(row.id),
+      agent_id: String(row.agent_id),
+      label: String(row.label || ""),
+      expires_at: String(row.expires_at),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** Read the terminal/reservation status without exposing code or identity data. */
+export function pairingStatus(home: string, pairId: string): string | null {
+  if (!/^pair_[a-f0-9]{32}$/.test(pairId)) {
+    throw new PairingError("invalid pair id");
+  }
+  const db = openDb(path.resolve(home));
+  try {
+    const row = db
+      .prepare("SELECT status FROM pairing_codes WHERE id=?")
+      .get(pairId) as { status: string } | undefined;
+    return row?.status ?? null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Complete or reject a previously reserved enrollment code exactly once. */
+export function finalizePairingEnrollment(
+  home: string,
+  pairId: string,
+  status: "redeemed" | "rejected" | "expired",
+): boolean {
+  if (!/^pair_[a-f0-9]{32}$/.test(pairId)) {
+    throw new PairingError("invalid pair id");
+  }
+  const db = openDb(path.resolve(home));
+  try {
+    const result = db
+      .prepare(
+        "UPDATE pairing_codes SET status=?, redeemed_at=? WHERE id=? AND status='enrollment_pending'",
+      )
+      .run(status, status === "redeemed" ? iso() : null, pairId);
+    return result.changes === 1;
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -321,6 +503,12 @@ export function redeemPairing(home: string, code: string): RedeemResult {
   if (!CODE_RE.test(normalized)) {
     throw new PairingError("invalid_or_expired_code");
   }
+  // Use the same Hub -> SQLite order as guarded enrollment finalization.
+  // Never hold a SQLite write transaction while waiting for the Hub lock.
+  return withHubStateLock(root, () => redeemPairingLocked(root, normalized));
+}
+
+function redeemPairingLocked(root: string, normalized: string): RedeemResult {
   const codeHash = hashCode(normalized);
   const now = new Date();
   const nowIso = iso(now);
@@ -359,12 +547,12 @@ export function redeemPairing(home: string, code: string): RedeemResult {
       // Keep transaction open across side effects? better-sqlite3 holds lock for
       // the sync transaction callback — perform roster+mint inside.
       try {
-        rosterAdded = ensureAgent(root, {
+        rosterAdded = ensureAgentLocked(root, {
           id: agentId,
           display_name: label.trim() || agentId.split("@", 1)[0] || agentId,
           skills: ["paired"],
         });
-        const minted = mintTokenWithSnapshot(root, agentId, label || "paired");
+        const minted = mintTokenWithSnapshotLocked(root, agentId, label || "paired");
         token = minted.token;
         mintedHash = minted.issued_hash;
         previous = minted.replaced;
@@ -380,14 +568,14 @@ export function redeemPairing(home: string, code: string): RedeemResult {
         }
       } catch (e) {
         if (tokenMinted) {
-          compensateMintedEnrollment(
+          compensateMintedEnrollmentLocked(
             root,
             agentId,
             mintedHash,
             previous,
             rosterAdded,
           );
-        } else if (rosterAdded) removeAgent(root, agentId);
+        } else if (rosterAdded) removeAgentLocked(root, agentId);
         if (e instanceof PairingError) throw e;
         throw new PairingError(
           `pairing enrollment failed: ${e instanceof Error ? e.message : String(e)}`,

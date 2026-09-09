@@ -2,11 +2,12 @@
  * Hub client connection: connection.json plus environment overrides.
  * Never stores live bearer in connection.json.
  */
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { URL } from "node:url";
 
-import { atomicWriteText } from "./atomic-file.js";
+import { atomicWriteText, withFileLockSync } from "./atomic-file.js";
 import { rejectPlaintextSecretsInConnection } from "./connection-policy.js";
 import { AgentMailError } from "./errors.js";
 
@@ -17,6 +18,25 @@ export interface ConnectionSettings {
   insecure_tls: boolean;
   note: string;
   set_at: string;
+  /** Opaque compare-and-swap revision written by the provider host. */
+  revision: string;
+}
+
+export interface ConnectionSnapshot {
+  settings: ConnectionSettings;
+  revision: string;
+}
+
+export class ConnectionRevisionConflictError extends AgentMailError {
+  readonly expected_revision: string;
+  readonly actual_revision: string;
+
+  constructor(expectedRevision: string, actualRevision: string) {
+    super("connection configuration changed; retry with the current revision", 5);
+    this.name = "ConnectionRevisionConflictError";
+    this.expected_revision = expectedRevision;
+    this.actual_revision = actualRevision;
+  }
 }
 
 export interface ResolvedConnection {
@@ -38,6 +58,102 @@ function envFlag(name: string): boolean {
 
 export function connectionPath(home: string): string {
   return path.join(home, "connection.json");
+}
+
+const EMPTY_CONNECTION: Omit<ConnectionSettings, "revision"> = {
+  hub_url: "",
+  token_file: "",
+  ca_file: "",
+  insecure_tls: false,
+  note: "",
+  set_at: "",
+};
+
+function emptyConnection(revision = "rev_empty00000000"): ConnectionSettings {
+  return { ...EMPTY_CONNECTION, revision };
+}
+
+function contentRevision(raw: string): string {
+  // Hash the exact bytes on disk so hand-edited settings cannot reuse a stale
+  // JSON revision field and accidentally win a compare-and-swap write.
+  return `rev_${createHash("sha256").update(raw, "utf8").digest("hex")}`;
+}
+
+function freshRevision(): string {
+  return `rev_${randomUUID().replace(/-/g, "")}`;
+}
+
+function readConnectionSnapshotUnlocked(home: string): ConnectionSnapshot {
+  const p = connectionPath(home);
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(p);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { settings: emptyConnection(), revision: "rev_empty00000000" };
+    }
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new AgentMailError("connection.json must be a regular file", 2);
+  }
+  const rawText = fs.readFileSync(p, "utf8");
+  let raw: Record<string, unknown>;
+  try {
+    raw = JSON.parse(rawText) as Record<string, unknown>;
+  } catch (e) {
+    throw new AgentMailError(`cannot read connection.json: ${e}`, 2);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new AgentMailError("connection.json must be a JSON object", 2);
+  }
+  rejectPlaintextSecretsInConnection(raw);
+  let hub_url = String(raw.hub_url || "").trim();
+  if (hub_url) hub_url = validateHubUrl(hub_url);
+  const storedRevision = raw.revision;
+  if (
+    storedRevision !== undefined &&
+    (typeof storedRevision !== "string" ||
+      !/^rev_[A-Za-z0-9_-]{8,160}$/.test(storedRevision))
+  ) {
+    throw new AgentMailError("connection.json has an invalid revision", 2);
+  }
+  const revision = contentRevision(rawText);
+  const settings: ConnectionSettings = {
+    hub_url,
+    token_file: String(raw.token_file || "").trim(),
+    ca_file: String(raw.ca_file || "").trim(),
+    insecure_tls: Boolean(raw.insecure_tls),
+    note: String(raw.note || "").trim(),
+    set_at: String(raw.set_at || "").trim(),
+    revision,
+  };
+  return { settings, revision };
+}
+
+export function loadConnectionSnapshot(home: string): ConnectionSnapshot {
+  return readConnectionSnapshotUnlocked(path.resolve(home));
+}
+
+/** Read the opaque revision used by connection compare-and-swap writes. */
+export function connectionRevision(home: string): string {
+  return loadConnectionSnapshot(home).revision;
+}
+
+/** Read the exact protected file bytes for a journaled CAS rollback. */
+export function readConnectionFileContents(home: string): string | null {
+  const p = connectionPath(path.resolve(home));
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(p);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new AgentMailError("connection.json must be a regular file", 2);
+  }
+  return fs.readFileSync(p, "utf8");
 }
 
 export function validateHubUrl(url: string): string {
@@ -62,40 +178,10 @@ export function validateHubUrl(url: string): string {
 }
 
 export function loadConnection(home: string): ConnectionSettings {
-  const p = connectionPath(home);
-  if (!fs.existsSync(p)) {
-    return {
-      hub_url: "",
-      token_file: "",
-      ca_file: "",
-      insecure_tls: false,
-      note: "",
-      set_at: "",
-    };
-  }
-  let raw: Record<string, unknown>;
-  try {
-    raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
-  } catch (e) {
-    throw new AgentMailError(`cannot read connection.json: ${e}`, 2);
-  }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new AgentMailError("connection.json must be a JSON object", 2);
-  }
-  rejectPlaintextSecretsInConnection(raw);
-  let hub_url = String(raw.hub_url || "").trim();
-  if (hub_url) hub_url = validateHubUrl(hub_url);
-  return {
-    hub_url,
-    token_file: String(raw.token_file || "").trim(),
-    ca_file: String(raw.ca_file || "").trim(),
-    insecure_tls: Boolean(raw.insecure_tls),
-    note: String(raw.note || "").trim(),
-    set_at: String(raw.set_at || "").trim(),
-  };
+  return loadConnectionSnapshot(home).settings;
 }
 
-export function setConnection(
+function setConnectionUnlocked(
   home: string,
   patch: Partial<ConnectionSettings>,
   merge = true,
@@ -103,14 +189,9 @@ export function setConnection(
   if (!fs.existsSync(home)) {
     throw new AgentMailError(`not initialized: ${home}`, 3);
   }
-  const current = merge ? loadConnection(home) : {
-    hub_url: "",
-    token_file: "",
-    ca_file: "",
-    insecure_tls: false,
-    note: "",
-    set_at: "",
-  };
+  const current = merge
+    ? loadConnection(home)
+    : emptyConnection(loadConnectionSnapshot(home).revision);
   const next: ConnectionSettings = {
     hub_url:
       patch.hub_url !== undefined
@@ -125,12 +206,93 @@ export function setConnection(
       patch.insecure_tls !== undefined ? Boolean(patch.insecure_tls) : current.insecure_tls,
     note: patch.note !== undefined ? patch.note.trim() : current.note,
     set_at: new Date().toISOString(),
+    // This field is metadata only; the returned CAS revision is the hash of
+    // the complete serialized file, including this value.
+    revision: freshRevision(),
   };
   if (next.insecure_tls && next.ca_file) {
     throw new AgentMailError("insecure_tls and ca_file are mutually exclusive", 2);
   }
-  atomicWriteText(connectionPath(home), JSON.stringify(next, null, 2) + "\n", 0o600);
-  return next;
+  const serialized = JSON.stringify(next, null, 2) + "\n";
+  atomicWriteText(connectionPath(home), serialized, 0o600);
+  return { ...next, revision: contentRevision(serialized) };
+}
+
+/**
+ * Atomically merge a connection update while serializing cross-process writers.
+ * The revision is generated by this function and cannot be supplied by callers.
+ */
+export function setConnection(
+  home: string,
+  patch: Partial<ConnectionSettings>,
+  merge = true,
+): ConnectionSettings {
+  return withFileLockSync(connectionPath(home), () =>
+    setConnectionUnlocked(home, patch, merge),
+  );
+}
+
+/**
+ * Compare-and-swap connection settings. A mismatch happens before any write,
+ * so a concurrent profile edit remains intact for the caller to reconcile.
+ */
+export function setConnectionIfRevision(
+  home: string,
+  expectedRevision: string,
+  patch: Partial<ConnectionSettings>,
+  merge = true,
+): ConnectionSnapshot {
+  return withFileLockSync(connectionPath(home), () => {
+    const current = loadConnectionSnapshot(home);
+    if (current.revision !== expectedRevision) {
+      throw new ConnectionRevisionConflictError(
+        expectedRevision,
+        current.revision,
+      );
+    }
+    const settings = setConnectionUnlocked(home, patch, merge);
+    return { settings, revision: settings.revision };
+  });
+}
+
+/** Restore an earlier exact file generation only when the current revision matches. */
+export function restoreConnectionIfRevision(
+  home: string,
+  expectedRevision: string,
+  previousContents: string | null,
+): ConnectionSnapshot {
+  return withFileLockSync(connectionPath(home), () => {
+    const current = loadConnectionSnapshot(home);
+    if (current.revision !== expectedRevision) {
+      throw new ConnectionRevisionConflictError(
+        expectedRevision,
+        current.revision,
+      );
+    }
+    if (previousContents === null) {
+      const target = connectionPath(home);
+      try {
+        fs.unlinkSync(target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    } else {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(previousContents) as unknown;
+      } catch {
+        throw new AgentMailError("cannot restore invalid connection.json", 2);
+      }
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new AgentMailError("cannot restore invalid connection.json", 2);
+      }
+      const candidate = raw as Record<string, unknown>;
+      rejectPlaintextSecretsInConnection(candidate);
+      if (candidate.hub_url) validateHubUrl(String(candidate.hub_url));
+      atomicWriteText(connectionPath(home), previousContents, 0o600);
+    }
+    return loadConnectionSnapshot(home);
+  });
 }
 
 function resolvePath(home: string, value: string, label: string, mustExist: boolean): string {
@@ -157,14 +319,7 @@ export function resolveClientConnection(
 ): ResolvedConnection {
   const stored = fs.existsSync(home)
     ? loadConnection(home)
-    : {
-        hub_url: "",
-        token_file: "",
-        ca_file: "",
-        insecure_tls: false,
-        note: "",
-        set_at: "",
-      };
+    : emptyConnection();
   const sources: Record<string, string> = {};
   const warnings: string[] = [];
 

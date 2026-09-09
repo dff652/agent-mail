@@ -25,6 +25,13 @@ The default project state lives in `.agent-mail/`. Keep that directory, tokens, 
 message content out of source control. Review the repository security policy before enabling remote
 Hub, federation, or wake integrations.
 
+Guarded new-identity enrollment is opt-in with `agent-mail hub --enable-enrollment`
+and native HTTPS. The package exports `ConnectionEnrollmentManager` and a
+host-mounted `createConnectionManagementListener`; the embedding host must
+supply authenticated session, CSRF and per-profile authorization. No enrollment
+operation is exposed as an ordinary MCP tool. Saving a connection and activating
+a running provider process are separate operations.
+
 ## License
 
 Apache-2.0. This package includes its own `LICENSE` and `NOTICE` files.

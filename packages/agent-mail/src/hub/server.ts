@@ -25,6 +25,8 @@ import { importEnvelope } from "../federation/envelope.js";
 import * as svc from "../services.js";
 import { AgentMailError } from "../errors.js";
 import { appendRuntimeLog } from "../observability.js";
+import { createEnrollmentListener } from "./enrollment-api.js";
+import { enrollmentJournalPath, sweepEnrollments } from "../enrollment.js";
 import { PairingError, redeemPairing } from "../pairing.js";
 import { loadPolicy } from "../policy.js";
 import {
@@ -66,6 +68,8 @@ import {
 export type HubServer = http.Server | https.Server;
 
 export interface HubOptions {
+  /** Opt in to the guarded enrollment protocol; requires native HTTPS. */
+  enableEnrollment?: boolean;
   home: string;
   host?: string;
   port?: number;
@@ -169,6 +173,7 @@ async function readRawBody(
 }
 
 interface HubRuntime {
+  enableEnrollment: boolean;
   replay: ReplayGuard;
   activeSseConnections: number;
   maxSseConnections: number;
@@ -198,6 +203,7 @@ function buildRequestListener(
   bind: { tls: boolean; requireAuth: boolean },
   runtime: HubRuntime,
 ): http.RequestListener {
+  const enrollment = createEnrollmentListener(home, runtime.enableEnrollment);
   return async (req, res) => {
     try {
       const scheme = bind.tls ? "https" : "http";
@@ -207,6 +213,7 @@ function buildRequestListener(
       );
       const method = (req.method || "GET").toUpperCase();
       const p = url.pathname;
+      if (await enrollment(req, res, p)) return;
 
       if (method === "GET" && (p === "/healthz" || p === "/health")) {
         if (bind.requireAuth) {
@@ -835,6 +842,11 @@ export function createHubServer(opts: HubOptions): HubServer {
   };
   const bind = validateHubBind(bindInput);
   const governance = validateHubGovernance(opts);
+  if (opts.enableEnrollment && !bind.tls) {
+    throw new Error("guarded enrollment requires native HTTPS");
+  }
+  const cleanupRequired = opts.enableEnrollment === true || fs.existsSync(enrollmentJournalPath(home));
+  if (cleanupRequired) sweepEnrollments(home);
   const maxSseConnections = opts.maxSseConnections ?? 64;
   const sseDrainTimeoutMs = opts.sseDrainTimeoutMs ?? 5_000;
   const ssePollIntervalMs = opts.ssePollIntervalMs ?? 100;
@@ -852,6 +864,7 @@ export function createHubServer(opts: HubOptions): HubServer {
     throw new Error("invalid Hub SSE governance options");
   }
   const handler = buildRequestListener(home, bind, {
+    enableEnrollment: opts.enableEnrollment === true,
     replay: new ReplayGuard(),
     activeSseConnections: 0,
     maxSseConnections,
@@ -859,11 +872,24 @@ export function createHubServer(opts: HubOptions): HubServer {
     ssePollIntervalMs,
   });
 
+  function maintainEnrollmentCleanup(server: HubServer): HubServer {
+    // Disabling new enrollment must not abandon previously issued pending tokens.
+    if (cleanupRequired) {
+      const cleanup = setInterval(() => {
+        try { sweepEnrollments(home); }
+        catch { appendRuntimeLog(home, "enrollment.cleanup", "error", { error: "cleanup_pending" }); }
+      }, 60_000);
+      cleanup.unref();
+      server.once("close", () => clearInterval(cleanup));
+    }
+    return server;
+  }
+
   if (bind.tls) {
     const cert = fs.readFileSync(path.resolve(opts.tlsCertFile!));
     const key = fs.readFileSync(path.resolve(opts.tlsKeyFile!));
     // TLS 1.2+ (Node default modern suites; no SSLv3)
-    return applyHubGovernance(
+    const server = applyHubGovernance(
       https.createServer(
         {
           cert,
@@ -875,8 +901,9 @@ export function createHubServer(opts: HubOptions): HubServer {
       ),
       governance,
     );
+    return maintainEnrollmentCleanup(server);
   }
-  return applyHubGovernance(http.createServer(handler), governance);
+  return maintainEnrollmentCleanup(applyHubGovernance(http.createServer(handler), governance));
 }
 
 export async function listenHub(

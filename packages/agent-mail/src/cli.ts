@@ -44,6 +44,7 @@ Usage:
   agent-mail hub-token list [--json] [--path DIR]
   agent-mail hub [--path DIR] [--host 127.0.0.1] [--port 7421]
                  [--tls-cert PEM] [--tls-key PEM] [--require-auth]
+                 [--enable-enrollment] # guarded enrollment requires native HTTPS
                  [--max-connections N] [--tls-handshake-timeout-ms MS]
                  [--headers-timeout-ms MS] [--request-timeout-ms MS]
   agent-mail bridge --recipient ID --runner codex|grok|claude
@@ -410,6 +411,7 @@ async function main(): Promise<void> {
         tlsCertFile: tlsCert,
         tlsKeyFile: tlsKey,
         requireAuth,
+        enableEnrollment: args.includes("--enable-enrollment"),
         maxConnections: numericFlag("--max-connections"),
         tlsHandshakeTimeoutMs: numericFlag("--tls-handshake-timeout-ms"),
         headersTimeoutMs: numericFlag("--headers-timeout-ms"),
