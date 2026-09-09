@@ -162,10 +162,13 @@ export function validateHubUrl(url: string): string {
   try {
     parsed = new URL(raw);
   } catch {
-    throw new AgentMailError(`invalid hub_url: ${url}`, 2);
+    throw new AgentMailError("invalid hub_url", 2);
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new AgentMailError("hub_url must be http(s)://", 2);
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== "/") {
+    throw new AgentMailError("hub_url must be an origin without credentials, query, fragment or path prefix", 2);
   }
   const host = (parsed.hostname || "").toLowerCase();
   if (parsed.protocol === "http:" && !LOOPBACK.has(host)) {
@@ -174,7 +177,7 @@ export function validateHubUrl(url: string): string {
       2,
     );
   }
-  return raw;
+  return parsed.origin;
 }
 
 export function loadConnection(home: string): ConnectionSettings {

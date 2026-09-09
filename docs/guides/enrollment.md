@@ -1,9 +1,36 @@
-# Guarded connection enrollment
+# Guarded connection enrollment (provider 1.0.0-alpha.6)
 
 This provider feature prepares a **new identity** on an existing HTTPS Hub.
 It is separate from the legacy pairing redemption endpoint and the ordinary
-mailbox MCP tools. A browser wizard and its DSH session authorization adapter
-are not included in this provider increment.
+mailbox MCP tools. The alpha.6 package now also exports an optional,
+authenticated DSH management host adapter. When a host explicitly mounts that
+adapter with a private configuration file, the companion DSH Agent Mail UI
+0.1.7 can provide the browser wizard. See [Authenticated management in a DSH
+host](dsh-management.md) for the private configuration and mount steps.
+
+This is an opt-in source and package candidate. Exact packed-artifact and
+browser evidence is recorded in the companion UI P1.2 acceptance document;
+this guide does not claim a production provider or DSH upgrade.
+
+## Operator workflow
+
+1. Create the private management password and profile registry described in
+   the [management host guide](dsh-management.md); keep homes, CA paths and
+   credentials out of the UI and published bundle.
+2. Explicitly mount the provider management adapter and install the UI in the
+   selected DSH profile, then open the Agent Mail panel and log in.
+3. Select an allowed profile and Hub, enter the one-time Hub code, confirm the
+   returned new identity, and save the connection.
+4. If the result is `restart_required`, explicitly restart the selected DSH
+   provider process and run the activation check. The adapter does not execute
+   arbitrary restart commands.
+5. If a mutation response is lost, refresh the existing enrollment status. Do
+   not consume another code; closing the page or clearing browser recovery
+   metadata does not cancel a pending Hub enrollment. Cancel it explicitly
+   when cancellation is intended.
+
+The wizard and ordinary mailbox UI do not wake a model or establish recipient
+presence.
 
 ## Hub operator
 
@@ -50,9 +77,17 @@ attempt during that window can fail until the lease expires.
 ## Embedding management host
 
 The package exports `ConnectionEnrollmentManager` and
-`createConnectionManagementListener`. The manager accepts a server-resolved
+`createConnectionManagementListener`, plus the optional
+`agent-mail/dsh-management` host adapter. The manager accepts a server-resolved
 provider home, authenticated owner, exact approved HTTPS targets and protected
 CA configuration. Credentials and recovery proofs stay in provider custody.
+
+The adapter composes the authenticated session boundary and connection
+management listener inside the DSH host. It is not inserted automatically by
+the UI, and its private configuration must be supplied by the host. The UI
+only calls the two mounted management route prefixes when they are available;
+without them it remains an ordinary mailbox UI and reports the management host
+as unconfigured.
 
 The HTTP listener is a mountable adapter, not an authentication service. The
 embedding host supplies its session authentication and a callback returning:
@@ -70,6 +105,17 @@ Configure the listener's profile registry with server-owned manager options.
 Every HTTP-exposed profile requires an explicit nonempty Hub allowlist. Browser
 requests cannot provide home paths, commands, environment variables, token/CA
 paths, recovery proofs or activation evidence.
+
+### Hub target migration
+
+Alpha.6 normalizes every configured Hub target at management-host startup.
+Allowlist entries must be origin-only HTTPS URLs. Userinfo (`user:password`),
+query strings, fragments and path prefixes are rejected before the host mounts;
+they are not reflected in the browser profile DTO. Remove such entries from a
+private profile registry and use a bare origin such as
+`https://hub.example`. The same origin-only restriction also applies to ordinary
+remote-client configuration; move credentials from URLs into the protected
+token file before upgrading.
 
 | POST route under `/v1/connection-management/` | Browser JSON fields besides `profile_handle` |
 | --- | --- |

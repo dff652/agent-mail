@@ -39,6 +39,7 @@ Usage:
                     [--thread ID] [--json] [--path DIR]
   agent-mail mcp
       # stdio MCP; set AGENT_MAIL_HOME and AGENT_MAIL_ID
+  agent-mail management-key init --file /absolute/path/to/management-password
   agent-mail hub-token mint|rotate|revoke|revoke-previous --as ID [--label L] [--path DIR]
   agent-mail hub-token webhook-init [--path DIR]
   agent-mail hub-token list [--json] [--path DIR]
@@ -317,6 +318,15 @@ async function main(): Promise<void> {
         return;
       }
       usage();
+    }
+    if (cmd === "management-key") {
+      if (args[1] !== "init") usage();
+      const filename = flag(args, "--file");
+      if (!filename) throw new AgentMailError("--file is required", 2);
+      const { createManagementPasswordFile } = await import("./dsh-management.js");
+      createManagementPasswordFile(filename);
+      console.log("Management login secret created; read it locally from the protected file.");
+      return;
     }
     if (cmd === "hub-token") {
       const sub = args[1];

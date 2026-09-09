@@ -50,6 +50,10 @@ describe("enrollment through HTTPS into a real MCP process", () => {
           if (!mcp) return { effective_hub_url: hub.url, agent_id: "joined@local", route_verified: false };
           const diagnosis = await call("comm_diagnose");
           const directory = await call("comm_list_agents");
+          expect(diagnosis).toMatchObject({
+            connection_revision: loadConnectionSnapshot(home).revision,
+            credential_source: "token_file", tls_verified: true,
+          });
           return { effective_hub_url: String(diagnosis.hub_url), agent_id: String(diagnosis.agent_id),
             route_verified: diagnosis.remote === true && diagnosis.mode === "remote_mail_api" && directory.remote === true };
         } };

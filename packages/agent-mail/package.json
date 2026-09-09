@@ -1,7 +1,7 @@
 {
   "name": "agent-mail",
-  "version": "1.0.0-alpha.5",
-  "description": "Agent Mail — TypeScript CLI/MCP/Hub (async agent mailbox)",
+  "version": "1.0.0-alpha.6",
+  "description": "Agent Mail \u2014 TypeScript CLI/MCP/Hub (async agent mailbox)",
   "type": "module",
   "bin": {
     "agent-mail": "./dist/cli.js",
@@ -13,6 +13,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./dsh-management": {
+      "types": "./dist/dsh-management.d.ts",
+      "import": "./dist/dsh-management.js"
     }
   },
   "files": [

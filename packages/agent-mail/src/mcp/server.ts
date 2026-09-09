@@ -8,11 +8,11 @@ import { z } from "zod";
 
 import fs from "node:fs";
 
-import { remoteModeEnabled } from "../connection.js";
+import { loadConnectionSnapshot, remoteModeEnabled, resolveClientConnection } from "../connection.js";
 import { AgentMailError } from "../errors.js";
 import { appendRuntimeLog } from "../observability.js";
 import { loadPolicy } from "../policy.js";
-import { openRemoteClient, type RemoteMailClient } from "../remote-client.js";
+import { openRemoteClient, RemoteMailClient } from "../remote-client.js";
 import * as svc from "../services.js";
 import { AGENT_MAIL_VERSION } from "../version.js";
 
@@ -367,7 +367,9 @@ export function createMcpServer(): McpServer {
         const h = home();
         if (remoteModeEnabled()) {
           try {
-            const remote = openRemoteClient(h);
+            const snapshot = loadConnectionSnapshot(h);
+            const resolved = resolveClientConnection(h);
+            const remote = new RemoteMailClient(resolved);
             const me = await remote.me();
             appendRuntimeLog(h, "mcp.comm_diagnose", "success", {
               actor: process.env.AGENT_MAIL_ID ?? null,
@@ -375,10 +377,15 @@ export function createMcpServer(): McpServer {
             });
             return jsonResult({
               remote: true,
-              hub_url: process.env.AGENT_MAIL_HUB_URL || "",
+              hub_url: new URL(remote.base).origin,
               agent_id: me.agent_id,
               mode: "remote_mail_api",
               implementation: "typescript",
+              // Opaque configuration-generation evidence binds activation to
+              // the actual MCP process without exposing its home or paths.
+              connection_revision: loadConnectionSnapshot(h).revision === snapshot.revision ? snapshot.revision : null,
+              credential_source: resolved.sources.hub_token,
+              tls_verified: remote.base.startsWith("https://") && !resolved.hub_insecure_tls,
             });
           } catch (e) {
             appendRuntimeLog(h, "mcp.comm_diagnose", "error", {

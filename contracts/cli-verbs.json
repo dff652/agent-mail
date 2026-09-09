@@ -96,6 +96,10 @@
       "purpose": "mint, rotate and revoke bearer tokens"
     },
     {
+      "name": "management-key",
+      "purpose": "create a private management login secret without printing or replacing it"
+    },
+    {
       "name": "bridge",
       "purpose": "wake bridge poller"
     },

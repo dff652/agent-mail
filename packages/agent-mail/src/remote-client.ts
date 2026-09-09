@@ -9,6 +9,7 @@ import { URL } from "node:url";
 import {
   remoteModeEnabled,
   resolveClientConnection,
+  validateHubUrl,
   type ResolvedConnection,
 } from "./connection.js";
 import { AgentMailError } from "./errors.js";
@@ -44,7 +45,7 @@ export class RemoteMailClient {
         2,
       );
     }
-    this.base = resolved.hub_url.replace(/\/$/, "");
+    this.base = validateHubUrl(resolved.hub_url);
     this.token = resolved.hub_token;
     this.insecure = resolved.hub_insecure_tls;
     this.maxAttempts = options.maxAttempts ?? 3;

@@ -35,3 +35,11 @@ a running provider process are separate operations.
 ## License
 
 Apache-2.0. This package includes its own `LICENSE` and `NOTICE` files.
+
+### Optional authenticated DSH management
+
+The `agent-mail/dsh-management` host module mounts authenticated connection
+management separately from mailbox MCP tools. Configure the operator, exact
+browser origin, permitted profiles and HTTPS Hub targets in a private file.
+See [the management guide](../../docs/guides/dsh-management.md) for setup and
+activation evidence. No host module is enabled by installing this package alone.
