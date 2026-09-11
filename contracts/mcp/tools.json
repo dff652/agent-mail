@@ -13,6 +13,16 @@
       "optional": ["unread_only"]
     },
     {
+      "name": "comm_sent",
+      "required": [],
+      "optional": ["limit", "before"]
+    },
+    {
+      "name": "comm_agent_details",
+      "required": [],
+      "optional": ["agent_id"]
+    },
+    {
       "name": "comm_claim",
       "required": ["message_id"],
       "optional": []

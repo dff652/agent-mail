@@ -1,5 +1,5 @@
 import { AgentMailError } from "../errors.js";
-import { validateAgentId } from "../ids.js";
+import { dtToIso, validateAgentId } from "../ids.js";
 import type { Message } from "../models.js";
 import * as svc from "../services.js";
 
@@ -81,6 +81,18 @@ function parseApprovalFlag(payload: Record<string, unknown>): boolean | null {
   }
   if (typeof canonical === "boolean") return canonical;
   return typeof legacy === "boolean" ? legacy : null;
+}
+
+function normalizeSentCursor(value: string): string | null {
+  const separator = value.indexOf("|");
+  const rawTimestamp = separator >= 0 ? value.slice(0, separator) : value;
+  const messageId = separator >= 0 ? value.slice(separator + 1) : "";
+  if (!rawTimestamp || (separator >= 0 && !messageId)) return null;
+  const parsed = new Date(rawTimestamp);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return separator >= 0
+    ? `${dtToIso(parsed)}|${messageId}`
+    : dtToIso(parsed);
 }
 
 function approvalPublic(
@@ -220,6 +232,62 @@ export function apiInbox(
           claim_by: i.delivery.claim_by,
           claim_until: i.delivery.claim_until?.toISOString() ?? null,
         };
+      }),
+    };
+  } catch (e) {
+    if (e instanceof AgentMailError) mapAgentError(e);
+    throw e;
+  }
+}
+
+export function apiSent(
+  home: string,
+  agentId: string,
+  opts: { before?: string | null; limit?: number } = {},
+): Record<string, unknown> {
+  const limit = opts.limit ?? 50;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    throw new MailApiError("limit must be between 1 and 1000", 400);
+  }
+  let before = opts.before ?? null;
+  if (before !== null) {
+    before = normalizeSentCursor(before);
+    if (before === null) {
+      throw new MailApiError("before must be an ISO timestamp", 400);
+    }
+  }
+  try {
+    const items = svc.sent(agentId, { home, before, limit });
+    const last = items.at(-1);
+    return {
+      agent_id: agentId,
+      count: items.length,
+      items,
+      // The message id disambiguates rows sharing the second-precision ts.
+      next_before:
+        items.length === limit && last
+          ? `${last.sent_at}|${last.message_id}`
+          : null,
+    };
+  } catch (e) {
+    if (e instanceof AgentMailError) mapAgentError(e);
+    throw e;
+  }
+}
+
+export function apiAgentDetails(
+  home: string,
+  requesterId: string,
+  targetId: string,
+  opts: { hubEndpoint?: string | null; authenticatedAt?: string | null } = {},
+): Record<string, unknown> {
+  try {
+    return {
+      ...svc.agentDetails(targetId, {
+        home,
+        requester: requesterId,
+        hubEndpoint: opts.hubEndpoint,
+        authenticatedAt: opts.authenticatedAt,
       }),
     };
   } catch (e) {

@@ -32,6 +32,29 @@ supply authenticated session, CSRF and per-profile authorization. No enrollment
 operation is exposed as an ordinary MCP tool. Saving a connection and activating
 a running provider process are separate operations.
 
+## Read surfaces
+
+The MCP server provides two additive, read-only views for clients that need to
+render durable coordination state:
+
+- `comm_sent({ limit?, before? })` returns only messages sent by the caller.
+  Each item contains the raw local `delivery_status` and `task_status`, a
+  derived `status` (`submitted`, `claimed`, `processing`, `completed`,
+  `failed`, or `unknown`), and `status_evidence`. When paging, pass the
+  returned `next_before` cursor (`<sent_at>|<message_id>`) to avoid skipping
+  messages with the same timestamp.
+- `comm_agent_details({ agent_id? })` returns roster identity and safe
+  connection metadata for the caller or a roster agent. `hub_endpoint` is the
+  Hub URL; it is never presented as a device IP. This provider has no trusted
+  device registration or heartbeat source, so `device_name` and `device_ip`
+  are `null`, and recipient `connection`/`last_seen` remain `unknown`/`null`.
+  `fields_unknown` lists each response field that is null or unknown.
+
+The same views are available through authenticated `GET /v1/mail/sent`,
+`GET /v1/mail/me/details`, and `GET /v1/mail/agents/{agent_id}/details`.
+The sent endpoint derives the sender from the bearer token and rejects query
+identity overrides. Existing mailbox tools and routes remain unchanged.
+
 ## License
 
 Apache-2.0. This package includes its own `LICENSE` and `NOTICE` files.

@@ -48,6 +48,20 @@ function indexExists(db: Db, name: string): boolean {
 }
 
 /**
+ * The sender history query is ordered by the same key it filters on. Keep
+ * this repair conditional so opening an already-current database remains
+ * read-only with respect to schema state.
+ */
+export function ensureSentHistoryIndex(db: Db): void {
+  if (!indexExists(db, "idx_messages_sender_ts_id")) {
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_messages_sender_ts_id
+         ON messages(from_id, ts DESC, id DESC)`,
+    );
+  }
+}
+
+/**
  * Additive v4 federation_outbox retry/DLQ columns.
  *
  * Reads first and only writes when something is genuinely missing: this runs on
@@ -111,6 +125,7 @@ export const MIGRATIONS: MigrationStep[] = [
       // Re-apply full idempotent DDL so fresh paths and partial upgrades converge.
       db.exec(SCHEMA_SQL);
       ensureFederationOutboxColumns(db);
+      ensureSentHistoryIndex(db);
     },
   },
 ];
@@ -144,6 +159,7 @@ export function migrateStore(db: Db, target = SCHEMA_VERSION): MigrateResult {
     // Still ensure additive columns (legacy DBs marked v4 without all ALTERs).
     if (target >= 4) {
       ensureFederationOutboxColumns(db);
+      ensureSentHistoryIndex(db);
     }
     return { fromVersion, toVersion: target, applied: [] };
   }

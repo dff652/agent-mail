@@ -45,6 +45,30 @@
         "duplicate"
       ]
     },
+    "sent": {
+      "method": "GET",
+      "path": "/v1/mail/sent",
+      "required_response_fields": ["agent_id", "count", "items", "next_before"],
+      "cursor": "<sent_at>|<message_id>",
+      "sender_scope": "bearer_identity"
+    },
+    "agent_details": {
+      "method": "GET",
+      "path": "/v1/mail/me/details",
+      "required_response_fields": [
+        "agent_id",
+        "display_name",
+        "skills",
+        "device_name",
+        "device_ip",
+        "hub_endpoint",
+        "connection",
+        "last_seen",
+        "evidence",
+        "fields_unknown"
+      ],
+      "device_fields_require": "trusted_registration_or_heartbeat"
+    },
     "inbox_item_required_fields": [
       "message_id",
       "type",
@@ -61,6 +85,33 @@
       "claim_by",
       "claim_until"
     ],
+    "sent_item_required_fields": [
+      "message_id",
+      "sent_at",
+      "to",
+      "type",
+      "thread_id",
+      "task_id",
+      "body_md",
+      "status",
+      "delivery_status",
+      "task_status",
+      "federation_status",
+      "status_evidence"
+    ],
+    "agent_details_required_fields": [
+      "agent_id",
+      "display_name",
+      "skills",
+      "device_name",
+      "device_ip",
+      "hub_endpoint",
+      "connection",
+      "last_seen",
+      "evidence",
+      "fields_unknown"
+    ],
+    "fields_unknown_semantics": "Names every response field whose value is null or unknown; device and connection fields remain listed until trusted registration/heartbeat evidence exists.",
     "task_terminal_created_status": 201,
     "approval_required_fields": [
       "id",

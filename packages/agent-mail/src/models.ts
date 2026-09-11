@@ -24,6 +24,70 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
+/**
+ * Sender-facing status derived from durable delivery/task evidence.
+ * `unknown` is retained for lifecycle states that do not have a truthful
+ * representation in the compact UI vocabulary (for example cancellation).
+ */
+export type SentHistoryStatus =
+  | "submitted"
+  | "claimed"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "unknown";
+
+export interface SentHistoryItem {
+  message_id: string;
+  sent_at: string;
+  to: string;
+  type: MessageType;
+  thread_id: string | null;
+  task_id: string | null;
+  body_md: string;
+  status: SentHistoryStatus;
+  /** Raw local delivery state, when the message has a local recipient row. */
+  delivery_status: DeliveryStatus | null;
+  /** Raw task state, when the message has a task row. */
+  task_status: TaskStatus | null;
+  /** Raw Hub-to-Hub state, when the message is federated outbound. */
+  federation_status: "pending" | "acked" | "dead" | null;
+  /** The durable row(s) that justify the derived status. */
+  status_evidence: {
+    basis: "delivery" | "task" | "federation" | "unknown";
+    delivery_status: DeliveryStatus | null;
+    task_status: TaskStatus | null;
+    federation_status: "pending" | "acked" | "dead" | null;
+    updated_at: string | null;
+  };
+  claim_by: string | null;
+  claim_until: string | null;
+  delivery_updated_at: string | null;
+  task_updated_at: string | null;
+  federation_updated_at: string | null;
+}
+
+export type AgentConnectionStatus = "connected" | "disconnected" | "unknown";
+
+export interface AgentDetails {
+  agent_id: string;
+  display_name: string;
+  skills: string[];
+  /** Device identity is unknown until a real registration/heartbeat supplies it. */
+  device_name: string | null;
+  device_ip: string | null;
+  /** The Hub endpoint used for this authenticated request, when known. */
+  hub_endpoint: string | null;
+  connection: AgentConnectionStatus;
+  last_seen: string | null;
+  evidence: {
+    registration: boolean;
+    heartbeat: boolean;
+    authenticated_request: boolean;
+  };
+  fields_unknown: string[];
+}
+
 export interface Message {
   id: string;
   ts: Date;

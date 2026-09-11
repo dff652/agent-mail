@@ -130,6 +130,14 @@ pending → approved | rejected
 | MCP/CLI 运行日志 | `agent-mail logs [--outcome error]` |
 | CLI traceback | `agent-mail --debug COMMAND ...` |
 
+MCP 客户端还可使用两个只读查询：`comm_sent({limit?, before?})` 只返回
+当前身份发送的消息，并带有持久化 delivery/task 状态证据；返回的
+`next_before`（`<sent_at>|<message_id>`）可作为稳定分页游标。
+`comm_agent_details({agent_id?})` 返回 roster 身份和已认证 Hub 端点。
+在没有可信设备注册或 heartbeat 证据时，`device_name`、`device_ip` 和
+收件人的在线状态必须保持未知；`fields_unknown` 列出值为 null 或 unknown
+的字段；Hub 端点不是设备 IP。
+
 ---
 
 ## 8. 目录（`.agent-mail/`）

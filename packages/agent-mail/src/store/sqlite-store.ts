@@ -29,6 +29,8 @@ import {
   type InboxItem,
   type Message,
   type MessageType,
+  type SentHistoryItem,
+  type SentHistoryStatus,
   type Task,
   type TaskStatus,
 } from "../models.js";
@@ -407,6 +409,63 @@ export class SqliteStore {
           .get(messageId, agentId) as Record<string, unknown>;
         return rowToDelivery(out);
       })();
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * List messages sent by one sender with the durable recipient evidence that
+   * is available in this Hub. The sender predicate is part of the SQL query so
+   * callers cannot accidentally turn this into a project-wide history read.
+   */
+  listSent(
+    senderId: string,
+    opts: { before?: string | null; limit?: number } = {},
+  ): SentHistoryItem[] {
+    const limit = opts.limit ?? 50;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      throw new Error("sent history limit must be between 1 and 1000");
+    }
+    if (opts.before !== undefined && opts.before !== null) {
+      if (!parseSentCursor(opts.before)) {
+        throw new Error("sent history before must be an ISO timestamp");
+      }
+    }
+    const cursor =
+      opts.before !== undefined && opts.before !== null
+        ? parseSentCursor(opts.before)
+        : null;
+    const db = this.connect();
+    try {
+      const rows = db
+        .prepare(
+          `
+          SELECT m.id, m.ts, m.to_id, m.type, m.thread_id, m.task_id, m.body_md,
+                 d.status AS d_status, d.claim_by AS d_claim_by,
+                 d.claim_until AS d_claim_until, d.updated_at AS d_updated_at,
+                 t.status AS task_status, t.updated_at AS task_updated_at,
+                 f.status AS federation_status,
+                 COALESCE(f.acked_at, f.last_attempt_at, f.created_at) AS f_updated_at
+          FROM messages m
+          LEFT JOIN deliveries d
+            ON d.message_id = m.id AND d.recipient = m.to_id
+          LEFT JOIN tasks t ON t.id = m.task_id AND m.type = 'task'
+          LEFT JOIN federation_outbox f ON f.message_id = m.id
+          WHERE m.from_id = ?
+            ${cursor?.id ? "AND (m.ts < ? OR (m.ts = ? AND m.id < ?))" : cursor ? "AND m.ts < ?" : ""}
+          ORDER BY m.ts DESC, m.id DESC
+          LIMIT ?
+          `,
+        )
+        .all(
+          ...(cursor?.id
+            ? [senderId, cursor.ts, cursor.ts, cursor.id, limit]
+            : cursor
+              ? [senderId, cursor.ts, limit]
+              : [senderId, limit]),
+        ) as Array<Record<string, unknown>>;
+      return rows.map(rowToSentHistoryItem);
     } finally {
       db.close();
     }
@@ -1256,6 +1315,118 @@ function validateConsumerId(value: string): string {
     throw new Error(`invalid consumer id: ${value}`);
   }
   return value;
+}
+
+/**
+ * Stable sent-history cursor: `<sent_at>|<message_id>`. A bare ISO timestamp
+ * remains accepted for callers that only need an older time boundary, while
+ * the returned cursor includes the message id so equal timestamps are not
+ * skipped between pages.
+ */
+function parseSentCursor(value: string): { ts: string; id?: string } | null {
+  const separator = value.indexOf("|");
+  const rawTs = separator >= 0 ? value.slice(0, separator) : value;
+  const id = separator >= 0 ? value.slice(separator + 1) : undefined;
+  if (!rawTs || (separator >= 0 && !id)) return null;
+  const parsed = new Date(rawTs);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return {
+    ts: dtToIso(parsed),
+    ...(id ? { id } : {}),
+  };
+}
+
+function nullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function localDeliveryStatus(value: unknown): DeliveryStatus | null {
+  return value === "pending" || value === "claimed" || value === "acked"
+    ? value
+    : null;
+}
+
+function taskStatus(value: unknown): TaskStatus | null {
+  return value === "open" ||
+    value === "in_progress" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "cancelled"
+    ? value
+    : null;
+}
+
+function federationStatus(
+  value: unknown,
+): "pending" | "acked" | "dead" | null {
+  return value === "pending" || value === "acked" || value === "dead"
+    ? value
+    : null;
+}
+
+function deriveSentHistoryStatus(
+  delivery: DeliveryStatus | null,
+  task: TaskStatus | null,
+  federation: "pending" | "acked" | "dead" | null,
+): { status: SentHistoryStatus; basis: "delivery" | "task" | "federation" | "unknown" } {
+  if (task === "failed") return { status: "failed", basis: "task" };
+  if (task === "completed") return { status: "completed", basis: "task" };
+  if (task === "in_progress") return { status: "processing", basis: "task" };
+  if (task === "cancelled") return { status: "unknown", basis: "task" };
+  if (delivery === "acked") return { status: "completed", basis: "delivery" };
+  if (delivery === "claimed") return { status: "claimed", basis: "delivery" };
+  if (delivery === "pending") return { status: "submitted", basis: "delivery" };
+  if (federation === "dead") return { status: "failed", basis: "federation" };
+  if (federation === "pending" || federation === "acked") {
+    // Federation ack is Hub-to-Hub transport evidence, not recipient task
+    // completion. Keep the sender status at submitted until local evidence
+    // says otherwise.
+    return { status: "submitted", basis: "federation" };
+  }
+  return { status: "unknown", basis: "unknown" };
+}
+
+function rowToSentHistoryItem(r: Record<string, unknown>): SentHistoryItem {
+  const delivery = localDeliveryStatus(r.d_status);
+  const task = taskStatus(r.task_status);
+  const federation = federationStatus(r.federation_status);
+  const derived = deriveSentHistoryStatus(delivery, task, federation);
+  const deliveryUpdated = nullableString(r.d_updated_at);
+  const taskUpdated = nullableString(r.task_updated_at);
+  const federationUpdated = nullableString(r.f_updated_at);
+  const updatedAt =
+    derived.basis === "delivery"
+      ? deliveryUpdated
+      : derived.basis === "task"
+        ? taskUpdated
+        : derived.basis === "federation"
+          ? federationUpdated
+          : null;
+  return {
+    message_id: String(r.id),
+    sent_at: String(r.ts),
+    to: String(r.to_id),
+    type: r.type as MessageType,
+    thread_id: nullableString(r.thread_id),
+    task_id: nullableString(r.task_id),
+    body_md: String(r.body_md ?? ""),
+    status: derived.status,
+    delivery_status: delivery,
+    task_status: task,
+    federation_status: federation,
+    status_evidence: {
+      basis: derived.basis,
+      delivery_status: delivery,
+      task_status: task,
+      federation_status: federation,
+      updated_at: updatedAt,
+    },
+    claim_by: nullableString(r.d_claim_by),
+    claim_until: nullableString(r.d_claim_until),
+    delivery_updated_at: deliveryUpdated,
+    task_updated_at: taskUpdated,
+    federation_updated_at: federationUpdated,
+  };
 }
 
 function rowToMessage(r: Record<string, unknown>): Message {

@@ -163,6 +163,71 @@ export function createMcpServer(): McpServer {
   );
 
   server.tool(
+    "comm_sent",
+    "List durable messages sent by the configured agent with recipient status evidence.",
+    {
+      limit: z.number().int().min(1).max(1000).optional().default(50),
+      before: z.string().optional(),
+    },
+    async (args) => {
+      try {
+        const h = home();
+        const remote = remoteOrNull(h);
+        if (remote) {
+          const result = await remote.sent({
+            limit: args.limit,
+            before: args.before,
+          });
+          return jsonResult({ ...result, remote: true });
+        }
+        const items = svc.sent(actor(), {
+          home: h,
+          limit: args.limit,
+          before: args.before,
+        });
+        const last = items.at(-1);
+        return jsonResult({
+          agent_id: actor(),
+          count: items.length,
+          items,
+          next_before:
+            items.length === args.limit && last
+              ? `${last.sent_at}|${last.message_id}`
+              : null,
+        });
+      } catch (e) {
+        return errResult(e, "mcp.comm_sent");
+      }
+    },
+  );
+
+  server.tool(
+    "comm_agent_details",
+    "Return safe identity and evidence-bounded connection details for this agent or a roster recipient.",
+    {
+      agent_id: z.string().optional(),
+    },
+    async (args) => {
+      try {
+        const h = home();
+        const remote = remoteOrNull(h);
+        if (remote) {
+          const result = await remote.agentDetails(args.agent_id);
+          return jsonResult({ ...result, remote: true });
+        }
+        return jsonResult(
+          svc.agentDetails(args.agent_id ?? actor(), {
+            home: h,
+            requester: actor(),
+          }),
+        );
+      } catch (e) {
+        return errResult(e, "mcp.comm_agent_details");
+      }
+    },
+  );
+
+  server.tool(
     "comm_claim",
     "Claim a delivery for exclusive processing (lease).",
     { message_id: z.string() },
@@ -417,6 +482,8 @@ export function createMcpServer(): McpServer {
 export const MCP_TOOL_NAMES = [
   "comm_send",
   "comm_inbox",
+  "comm_sent",
+  "comm_agent_details",
   "comm_claim",
   "comm_ack",
   "comm_list_agents",

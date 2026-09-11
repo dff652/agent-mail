@@ -11,6 +11,7 @@ import {
   SCHEMA_VERSION,
   writeUserVersion,
   ensureFederationOutboxColumns,
+  ensureSentHistoryIndex,
 } from "../src/store/migrate.js";
 import {
   SCHEMA_V1_SQL,
@@ -74,6 +75,13 @@ describe("schema user_version migrations", () => {
       expect(fedCols).toContain("attempts");
       expect(fedCols).toContain("last_error");
       expect(fedCols).toContain("dead_at");
+      expect(
+        (db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+          )
+          .get("idx_messages_sender_ts_id") as { 1: number } | undefined),
+      ).toBeTruthy();
     } finally {
       db.close();
     }
@@ -185,6 +193,24 @@ describe("schema user_version migrations", () => {
     const db = new Database(":memory:");
     try {
       ensureFederationOutboxColumns(db);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("repairs the sender history index without changing schema version", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(SCHEMA_V1_SQL);
+      expect(() => ensureSentHistoryIndex(db)).not.toThrow();
+      expect(
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+          )
+          .get("idx_messages_sender_ts_id"),
+      ).toBeTruthy();
+      expect(readUserVersion(db)).toBe(0);
     } finally {
       db.close();
     }

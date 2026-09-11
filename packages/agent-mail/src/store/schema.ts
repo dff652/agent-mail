@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS federation_inbox_dedup (
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_recipient_status
   ON deliveries(recipient, status);
+CREATE INDEX IF NOT EXISTS idx_messages_sender_ts_id
+  ON messages(from_id, ts DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_kind_ts ON events(kind, ts);

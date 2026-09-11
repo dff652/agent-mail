@@ -13,9 +13,11 @@ import { FederationError, isForeignRecipient } from "./federation/peers.js";
 import { validateAgentId } from "./ids.js";
 import {
   createMessage,
+  type AgentDetails,
   type Delivery,
   type Message,
   type MessageType,
+  type SentHistoryItem,
 } from "./models.js";
 import { readRuntimeLogs } from "./observability.js";
 import { loadPolicy } from "./policy.js";
@@ -319,6 +321,70 @@ export function inbox(
     throw new AgentMailError(`agent not in roster: ${id}`, 4);
   }
   return getStore(home).inbox(id, !opts.allItems);
+}
+
+/** Sender-scoped durable history; never returns another sender's messages. */
+export function sent(
+  agentId: string,
+  opts: { home?: string; before?: string | null; limit?: number } = {},
+): SentHistoryItem[] {
+  const home = requireHome(path.resolve(opts.home ?? defaultHome()));
+  const id = validateAgentId(agentId);
+  if (!rosterHas(loadRoster(home), id)) {
+    throw new AgentMailError(`agent not in roster: ${id}`, 4);
+  }
+  return getStore(home).listSent(id, {
+    before: opts.before,
+    limit: opts.limit,
+  });
+}
+
+/**
+ * Return the minimum safe identity/presence detail for one agent. Device
+ * fields remain unknown because this provider has no trusted device
+ * registration or heartbeat source yet.
+ */
+export function agentDetails(
+  agentId: string,
+  opts: {
+    home?: string;
+    requester?: string | null;
+    hubEndpoint?: string | null;
+    authenticatedAt?: string | null;
+  } = {},
+): AgentDetails {
+  const home = requireHome(path.resolve(opts.home ?? defaultHome()));
+  const id = validateAgentId(agentId);
+  const requester = opts.requester ? validateAgentId(opts.requester) : null;
+  const roster = loadRoster(home);
+  const record = roster.agents.find((candidate) => candidate.id === id);
+  if (!record) throw new AgentMailError(`agent not in roster: ${id}`, 4);
+  const authenticatedRequest =
+    requester === id &&
+    typeof opts.authenticatedAt === "string" &&
+    Number.isFinite(Date.parse(opts.authenticatedAt));
+  const lastSeen = authenticatedRequest ? opts.authenticatedAt! : null;
+  const fieldsUnknown = ["device_name", "device_ip", "connection"];
+  if (!opts.hubEndpoint) fieldsUnknown.push("hub_endpoint");
+  if (!lastSeen) fieldsUnknown.push("last_seen");
+  return {
+    agent_id: id,
+    display_name: record.display_name,
+    skills: [...record.skills],
+    device_name: null,
+    device_ip: null,
+    hub_endpoint: opts.hubEndpoint ?? null,
+    // A single request proves only that this identity was observed recently;
+    // it does not prove that the agent remains online after the response.
+    connection: "unknown",
+    last_seen: lastSeen,
+    evidence: {
+      registration: true,
+      heartbeat: false,
+      authenticated_request: authenticatedRequest,
+    },
+    fields_unknown: fieldsUnknown,
+  };
 }
 
 export function claim(

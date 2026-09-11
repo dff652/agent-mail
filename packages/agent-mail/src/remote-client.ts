@@ -214,6 +214,26 @@ export class RemoteMailClient {
     });
   }
 
+  sent(opts: {
+    limit?: number;
+    before?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    const query: Record<string, string> = {};
+    if (opts.limit !== undefined) query.limit = String(opts.limit);
+    if (opts.before !== undefined) query.before = opts.before;
+    return this.request("GET", "/v1/mail/sent", { query });
+  }
+
+  async agentDetails(agentId?: string): Promise<Record<string, unknown>> {
+    const apiPath = agentId
+      ? `/v1/mail/agents/${encodeURIComponent(agentId)}/details`
+      : "/v1/mail/me/details";
+    const result = await this.request("GET", apiPath);
+    // The client-side validated origin is the configured Hub identity. Do not
+    // let a proxy-supplied Host header change what the caller labels as Hub.
+    return { ...result, hub_endpoint: this.base };
+  }
+
   claim(messageId: string): Promise<Record<string, unknown>> {
     return this.request("POST", `/v1/mail/messages/${messageId}/claim`, { body: {} });
   }

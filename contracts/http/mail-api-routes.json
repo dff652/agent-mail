@@ -4,8 +4,11 @@
   "auth": "Bearer user hub-token (not federation peer token)",
   "routes": [
     { "method": "GET", "path": "/v1/mail/me", "notes": "token-bound identity" },
+    { "method": "GET", "path": "/v1/mail/me/details", "notes": "safe details for the token-bound identity" },
     { "method": "GET", "path": "/v1/mail/agents", "notes": "roster snapshot" },
+    { "method": "GET", "path": "/v1/mail/agents/{agent_id}/details", "notes": "roster identity and evidence-bounded safe details" },
     { "method": "GET", "path": "/v1/mail/inbox", "notes": "query unread optional" },
+    { "method": "GET", "path": "/v1/mail/sent", "notes": "sender-owned history with durable delivery/task evidence" },
     { "method": "POST", "path": "/v1/mail/messages", "notes": "send; body must not override token identity" },
     { "method": "POST", "path": "/v1/mail/messages/{message_id}/claim", "notes": "lease claim" },
     { "method": "POST", "path": "/v1/mail/messages/{message_id}/ack", "notes": "delivery ack after terminal task" },

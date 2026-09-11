@@ -57,10 +57,12 @@ import {
   apiAgents,
   apiClaim,
   apiDecideApproval,
+  apiAgentDetails,
   apiInbox,
   apiListApprovals,
   apiMe,
   apiSend,
+  apiSent,
   apiTaskOutcome,
   apiThread,
 } from "./mail-api.js";
@@ -334,10 +336,38 @@ function buildRequestListener(
         sendJson(res, 200, apiMe(agent));
         return;
       }
+      if (method === "GET" && p === "/v1/mail/me/details") {
+        const agent = requireMailAgent();
+        sendJson(
+          res,
+          200,
+          apiAgentDetails(home, agent, agent, {
+            hubEndpoint: url.origin,
+            authenticatedAt: new Date().toISOString(),
+          }),
+        );
+        return;
+      }
       if (method === "GET" && p === "/v1/mail/agents") {
         const agent = requireMailAgent();
         void agent;
         sendJson(res, 200, apiAgents(home));
+        return;
+      }
+      const agentDetailsMatch = p.match(/^\/v1\/mail\/agents\/([^/]+)\/details$/);
+      if (method === "GET" && agentDetailsMatch) {
+        const agent = requireMailAgent();
+        sendJson(
+          res,
+          200,
+          apiAgentDetails(home, agent, decodeURIComponent(agentDetailsMatch[1]), {
+            hubEndpoint: url.origin,
+            authenticatedAt:
+              decodeURIComponent(agentDetailsMatch[1]) === agent
+                ? new Date().toISOString()
+                : null,
+          }),
+        );
         return;
       }
       if (method === "GET" && p === "/v1/mail/inbox") {
@@ -353,6 +383,19 @@ function buildRequestListener(
         }
         const all = url.searchParams.get("all") === "1";
         sendJson(res, 200, apiInbox(home, agent, all));
+        return;
+      }
+      if (method === "GET" && p === "/v1/mail/sent") {
+        const agent = requireMailAgent();
+        for (const key of ["as", "agent_id", "from", "sender", "recipient"]) {
+          if (url.searchParams.has(key)) {
+            throw new MailApiError("identity comes from the bearer token", 403);
+          }
+        }
+        const limitRaw = url.searchParams.get("limit");
+        const before = url.searchParams.get("before");
+        const limit = limitRaw === null || limitRaw === "" ? 50 : Number(limitRaw);
+        sendJson(res, 200, apiSent(home, agent, { limit, before }));
         return;
       }
       if (method === "GET" && p === "/v1/mail/approvals") {
