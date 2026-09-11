@@ -1,5 +1,16 @@
 # Sent receipts: alpha.7 candidate acceptance
 
+Published on 2026-09-11 as the
+[alpha.7 GitHub prerelease](https://github.com/dff652/agent-mail/releases/tag/v1.0.0-alpha.7),
+tagged at `6bdcc67`. Source CI and the tag release workflow passed. The
+anonymous download matched the accepted SHA-256 below, all 117 files matched
+a clean installation, and authenticated TLS receipt/restart checks passed.
+CycloneDX SBOM/checksums and workflow provenance were verified. The companion
+unified DSH plugin 0.2.0 is also released; npm and production migration were
+not performed. See the
+[release handoff](https://github.com/dff652/deepseek-harness-community-plugins/blob/main/docs/agent-mail-0.2.0-release.md)
+for the open catalog PR and upgrade boundaries.
+
 `agent-mail@1.0.0-alpha.7` adds sender-scoped sent history and agent details to
 the local MCP and authenticated Hub paths. `comm_sent` and `comm_agent_details`
 support durable UI history without treating transport acknowledgment as task
