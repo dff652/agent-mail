@@ -28,19 +28,34 @@ The complete plugin integration evidence and migration plan are maintained in
 That document is part of the companion candidate source and may not be visible
 at the remote URL until its source commit is pushed.
 
-## Pending cross-host gate
+## Cross-host isolated acceptance on 2026-09-11
 
-Two hosts passed read-only SSH, routing and runtime preflight. Application-level
-connectivity on the temporary TLS port has not been tested. Host A will run a
-disposable Hub and DSH profile; Host B will use an independent MCP identity and
-mailbox home. Install native dependencies separately on each target.
+Host A ran a disposable authenticated TLS Hub and DSH profile. Host B used an
+independent MCP identity and mailbox home with natively compiled SQLite
+bindings. The temporary CA and IP SAN were validated; TLS verification stayed
+enabled. The selected port was reachable without changing firewall or router
+policy.
 
-Verify bidirectional send, claim/done/error/ack, sender isolation, client and Hub
-restart, disconnect recovery, UI updates and durable history. Retain sanitized
-version/digest evidence and remove temporary processes and credentials. Do not
-modify existing production profiles, services or firewall/router policy.
+Independently verified: bidirectional send, sender isolation, claim, done,
+error, ack, original-task versus notification delivery state, MCP restart,
+Hub disconnect fail-closed, Hub restart recovery, UI history after reload,
+and automatic claim/completion updates. Device name/IP and continuous
+presence remained unknown. Existing production profiles were not modified.
 
-Host B preparation/client checks can be delegated to one `luna-worker`; the
-primary agent owns integration, complete diff review and independent final
-verification. Record passed, failed and unrun checks explicitly. Source commit,
-push, release/publication and production deployment remain separate decisions.
+The first Host B `type=error` attempt used the origin of a B→A task and was
+rejected (`done/error must be sent by the assignee to the task origin`). The
+primary agent retested as assignee on both directions: the original task
+became `failed` while the error notification stayed a delivery receipt. The
+Host B worker missed the Hub-down window; the primary agent still observed
+connection refused without fabricated receipts, then recovered sent history
+after restart.
+
+The Host B `luna-worker` type was unavailable in the session that ran this
+gate; one general-purpose subagent used the same Host B ownership contract.
+That is not a claim that `luna-worker` ran. A worker summary alone was not
+treated as acceptance. Item-by-item evidence is in the companion
+[cross-host closeout](https://github.com/dff652/deepseek-harness-community-plugins/blob/main/docs/agent-mail-acceptance-closeout.md).
+
+Sanitized version/digest evidence is retained outside this repository.
+Temporary processes and credentials were removed. Source commit, push,
+release/publication and production deployment remain separate decisions.
