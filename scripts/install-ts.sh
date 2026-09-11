@@ -6,7 +6,7 @@
 
 set -eu
 
-DEFAULT_AGENT_MAIL_VERSION=1.0.0-alpha.4
+DEFAULT_AGENT_MAIL_VERSION=1.0.0-alpha.6
 
 die() {
   echo "error: $*" >&2
