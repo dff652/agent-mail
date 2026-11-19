@@ -34,6 +34,8 @@ const AGENT_MAIL_MCP_TOOLS = [
   "comm_diagnose",
 ] as const;
 const MAX_DIAGNOSTIC_BYTES = 128 * 1024;
+const COMPLETION_CHECK_MS = 1_000;
+const COMPLETION_GRACE_MS = 10_000;
 
 export interface WakeRunnerConfig {
   home: string;
@@ -44,6 +46,7 @@ export interface WakeRunnerConfig {
   timeoutMs?: number;
   terminateGraceMs?: number;
   signal?: AbortSignal;
+  isComplete?: () => boolean;
 }
 
 export interface WakeRunnerEvent {
@@ -61,6 +64,7 @@ export interface RunnerResult {
   duration_ms: number;
   timed_out: boolean;
   cancelled: boolean;
+  stopped_after_completion?: boolean;
   failure_class:
     | "rate_limited"
     | "authentication"
@@ -534,6 +538,7 @@ export async function runChildProcess(
     | "timeoutMs"
     | "terminateGraceMs"
     | "signal"
+    | "isComplete"
   >,
 ): Promise<RunnerResult> {
   const timeoutMs = config.timeoutMs ?? 900_000;
@@ -567,8 +572,11 @@ export async function runChildProcess(
     let diagnostic = Buffer.alloc(0);
     let timedOut = false;
     let cancelled = false;
+    let stoppedAfterCompletion = false;
+    let completedAt: number | undefined;
     let settled = false;
     let terminating = false;
+    let forcedTermination = false;
     let killTimer: NodeJS.Timeout | undefined;
     const child = spawn(executable, command, {
       cwd: config.project,
@@ -583,12 +591,22 @@ export async function runChildProcess(
       windowsHide: true,
     });
 
+    const closeExitedPipes = (): void => {
+      if (forcedTermination && (child.exitCode !== null || child.signalCode !== null)) {
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }
+    };
     const terminate = (): void => {
       if (terminating) return;
       terminating = true;
       terminateProcessGroup(child.pid, "SIGTERM");
       killTimer = setTimeout(() => {
+        forcedTermination = true;
         terminateProcessGroup(child.pid, "SIGKILL");
+        // A descendant that inherited stdio can keep the close event pending.
+        closeExitedPipes();
       }, terminateGraceMs);
     };
     const onAbort = (): void => {
@@ -602,7 +620,34 @@ export async function runChildProcess(
       timedOut = true;
       terminate();
     }, timeoutMs);
+    const completionTimer = config.isComplete ? setInterval(() => {
+      if (settled || terminating) return;
+      try {
+        if (!config.isComplete?.()) {
+          completedAt = undefined;
+          return;
+        }
+      } catch {
+        // A failed store read cannot establish completion.
+        completedAt = undefined;
+        return;
+      }
+      const now = performance.now();
+      completedAt ??= now;
+      if (now - completedAt >= COMPLETION_GRACE_MS) {
+        stoppedAfterCompletion = true;
+        terminate();
+      }
+    }, COMPLETION_CHECK_MS) : undefined;
 
+    const clearTimers = (): void => {
+      clearTimeout(timeout);
+      clearInterval(completionTimer);
+      if (killTimer) clearTimeout(killTimer);
+      config.signal?.removeEventListener("abort", onAbort);
+    };
+
+    child.once("exit", closeExitedPipes);
     child.stdout?.on("data", (chunk: Buffer) => {
       diagnostic = boundedTail(diagnostic, chunk);
     });
@@ -612,9 +657,7 @@ export async function runChildProcess(
     child.once("error", (error) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      config.signal?.removeEventListener("abort", onAbort);
+      clearTimers();
       reject(
         new Error(
           `cannot start runner: ${(error as NodeJS.ErrnoException).code ?? error.name}`,
@@ -624,18 +667,18 @@ export async function runChildProcess(
     child.once("close", (code, signal) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      config.signal?.removeEventListener("abort", onAbort);
+      clearTimers();
       const exitCode = timedOut ? 124 : cancelled ? 130 : (code ?? (signal ? 1 : 0));
-      let failureClass: RunnerResult["failure_class"] = timedOut
+      let failureClass: RunnerResult["failure_class"] = stoppedAfterCompletion
+        ? null
+        : timedOut
         ? ("timed_out" as const)
         : cancelled
           ? ("cancelled" as const)
           : exitCode === 0
             ? null
             : classifyRunnerFailure(diagnostic);
-      if (exitCode !== 0 && failureClass === null) {
+      if (exitCode !== 0 && failureClass === null && !stoppedAfterCompletion) {
         failureClass = "runner_exit";
       }
       resolve({
@@ -643,6 +686,7 @@ export async function runChildProcess(
         duration_ms: Math.round((performance.now() - started) * 1000) / 1000,
         timed_out: timedOut,
         cancelled,
+        ...(stoppedAfterCompletion ? { stopped_after_completion: true } : {}),
         failure_class: failureClass,
       });
     });

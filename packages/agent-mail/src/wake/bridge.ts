@@ -83,6 +83,7 @@ export interface BridgeProcessResult {
   duration_ms?: number;
   timed_out?: boolean;
   cancelled?: boolean;
+  stopped_after_completion?: boolean;
   failure_class?: RunnerResult["failure_class"];
 }
 
@@ -219,6 +220,31 @@ function stateContext(item: WakeInboxSnapshot): Record<string, unknown> {
   };
 }
 
+function recoverTerminalDelivery(opts: BridgeOptions, item: WakeInboxSnapshot): boolean {
+  const { message, delivery, task } = item;
+  if (message.type !== "task" || (task?.status !== "completed" && task?.status !== "failed") ||
+    delivery.status !== "claimed" || delivery.claim_by !== opts.recipient) {
+    return false;
+  }
+  const home = { home: opts.home };
+  if (delivery.claim_until !== null && delivery.claim_until.getTime() <= Date.now()) {
+    try {
+      svc.claim(message.id, opts.recipient, home);
+    } catch (error) {
+      const current = snapshotFor(opts.home, opts.recipient, message.id);
+      if (current.delivery.status !== "acked") throw error;
+    }
+  }
+  // The existing terminal receipt is authoritative. Only the original delivery
+  // still needs an ack; waking the runner again would risk repeating its work.
+  item.delivery = svc.ack(message.id, opts.recipient, home);
+  appendRuntimeLog(opts.home, "wake.recovered_delivery", "success", {
+    actor: opts.recipient,
+    context: { message_id: message.id, task_id: message.task_id },
+  });
+  return true;
+}
+
 function initialResult(
   opts: BridgeOptions,
   event: OutboxEventRow,
@@ -307,7 +333,11 @@ async function processLiveSnapshot(
   event: OutboxEventRow,
   item: WakeInboxSnapshot,
 ): Promise<BridgeProcessResult> {
-  const result = initialResult(opts, event, item);
+  let result = initialResult(opts, event, item);
+  if (opts.runner === "antigravity" && result.action === "run" && !opts.signal?.aborted &&
+    recoverTerminalDelivery(opts, item)) {
+    result = initialResult(opts, event, item);
+  }
   const receipt = isReceipt(item);
   const context = {
     consumer_id: opts.consumerId,
@@ -393,6 +423,10 @@ async function processLiveSnapshot(
         return result;
       }
     }
+    if (config.runner === "antigravity") {
+      const store = svc.getStore(opts.home);
+      config.isComplete = () => store.hasWakeCompletion(event.message_id, opts.recipient);
+    }
     appendRuntimeLog(opts.home, "runner.started", "success", {
       actor: opts.recipient,
       context: { ...context, mode, cost_notice_shown: true },
@@ -424,9 +458,17 @@ async function processLiveSnapshot(
     duration_ms: runnerResult.duration_ms,
     timed_out: runnerResult.timed_out,
     cancelled: runnerResult.cancelled,
+    ...(runnerResult.stopped_after_completion ? { stopped_after_completion: true } : {}),
     failure_class: runnerResult.failure_class,
   });
-  if (runnerResult.exit_code !== 0) {
+  let refreshed: WakeInboxSnapshot | undefined;
+  if (config.runner === "antigravity" && !runnerResult.cancelled) {
+    refreshed = snapshotFor(opts.home, opts.recipient, event.message_id);
+    recoverTerminalDelivery(opts, refreshed);
+  }
+  const settledAfterError = runnerResult.exit_code !== 0 && refreshed !== undefined &&
+    businessState(event, refreshed) === "complete";
+  if (runnerResult.exit_code !== 0 && !settledAfterError) {
     result.action = "runner_failed";
     result.reason = `${opts.runner} runner failed with exit code ${runnerResult.exit_code}`;
     appendRuntimeLog(
@@ -450,16 +492,20 @@ async function processLiveSnapshot(
     );
     return result;
   }
-  appendRuntimeLog(opts.home, "runner.completed", "success", {
+  const operation = runnerResult.stopped_after_completion
+    ? "runner.stopped_after_completion"
+    : settledAfterError ? "runner.settled_after_exit" : "runner.completed";
+  appendRuntimeLog(opts.home, operation, "success", {
     actor: opts.recipient,
     context: {
       ...context,
       mode,
       duration_ms: runnerResult.duration_ms,
+      ...(settledAfterError ? { exit_code: runnerResult.exit_code } : {}),
     },
   });
 
-  const refreshed = snapshotFor(opts.home, opts.recipient, event.message_id);
+  refreshed ??= snapshotFor(opts.home, opts.recipient, event.message_id);
   const finalState = businessState(event, refreshed);
   result.business_state = finalState;
   if (finalState === "incomplete") {
