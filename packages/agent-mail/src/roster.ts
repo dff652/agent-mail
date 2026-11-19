@@ -20,6 +20,7 @@ export interface Roster {
 }
 
 export const DEFAULT_AGENTS: AgentRecord[] = [
+  { id: "antigravity@local", display_name: "Antigravity", skills: ["implement", "review"] },
   { id: "claude-code@local", display_name: "Claude Code", skills: ["implement", "refactor"] },
   { id: "codex@local", display_name: "Codex", skills: ["review", "long-task"] },
   { id: "grok@local", display_name: "Grok", skills: ["review", "research"] },

@@ -9,6 +9,13 @@ import {
   resolveMcpInvocation,
   runQuickstart,
 } from "../src/quickstart.js";
+import { loadRoster, removeAgent } from "../src/roster.js";
+import * as svc from "../src/services.js";
+import {
+  ANTIGRAVITY_MCP_CONFIG,
+  ANTIGRAVITY_PLUGIN_DIR,
+  validateProjectMcpConfig,
+} from "../src/wake/runner.js";
 
 const temps: string[] = [];
 
@@ -32,6 +39,7 @@ describe("quickstart", () => {
 
   it("parses multi runners and rejects unknown", () => {
     expect(parseRunners("codex,claude")).toEqual(["codex", "claude"]);
+    expect(parseRunners("codex,antigravity,ANTIGRAVITY")).toEqual(["codex", "antigravity"]);
     expect(() => parseRunners("cursor")).toThrow(/unknown runner/);
   });
 
@@ -58,6 +66,53 @@ describe("quickstart", () => {
     expect(text).toContain("AGENT_MAIL_HOME");
     expect(result.wrote).toContain(path.join(".codex", "config.toml"));
     expect(result.mcp_command).toBeTruthy();
+    expect(() => validateProjectMcpConfig({
+      home: result.home, project, runner: "codex", recipient: "codex@local",
+    })).not.toThrow();
+  });
+
+  it("creates a native Antigravity plugin and provisions both identities in one home", () => {
+    const project = path.join(tmpProject(), 'project "with spaces"');
+    const home = svc.initProject(path.join(project, ".agent-mail"));
+    expect(removeAgent(home, "antigravity@local")).toBe(true);
+    const runners = parseRunners("codex,antigravity");
+    const result = runQuickstart(project, { runners });
+    const plugin = path.join(project, ANTIGRAVITY_PLUGIN_DIR);
+    expect(result.wrote).toHaveLength(6);
+    expect(result.configs).toEqual([path.join(".codex", "config.toml"), ANTIGRAVITY_MCP_CONFIG]);
+    expect(JSON.parse(fs.readFileSync(path.join(plugin, "plugin.json"), "utf8"))).toMatchObject({
+      name: "agent-mail",
+      version: expect.any(String),
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(project, ANTIGRAVITY_MCP_CONFIG), "utf8")))
+      .toEqual({
+        mcpServers: {
+          "agent-mail": {
+            command: result.mcp_command,
+            args: result.mcp_args,
+            env: { AGENT_MAIL_HOME: home, AGENT_MAIL_ID: "antigravity@local" },
+          },
+        },
+      });
+    const rule = path.join(plugin, "rules", "AGENTS.md");
+    expect(fs.readFileSync(rule, "utf8")).toMatch(/done or error.*acknowledge.*summary.*Never send a new task/);
+    expect(fs.readFileSync(path.join(plugin, "skills", "agent-mail", "SKILL.md"), "utf8"))
+      .toMatch(/^---\nname: agent-mail\ndescription:/);
+    expect(JSON.parse(fs.readFileSync(path.join(plugin, "hooks.json"), "utf8"))).toEqual({});
+    expect(fs.existsSync(path.join(plugin, "hooks", "hooks.json"))).toBe(false);
+    for (const runner of ["codex", "antigravity"] as const) {
+      expect(() => validateProjectMcpConfig({
+        home, project, runner, recipient: `${runner}@local`,
+      })).not.toThrow();
+    }
+    fs.writeFileSync(rule, "# Customized rule\n");
+    expect(runQuickstart(project, { runners }).skipped).toHaveLength(6);
+    expect(fs.readFileSync(rule, "utf8")).toBe("# Customized rule\n");
+    expect(runQuickstart(project, { runners, force: true }).wrote).toHaveLength(6);
+    expect(fs.readFileSync(rule, "utf8")).toContain("# Agent Mail");
+    const ids = loadRoster(home).agents.map((agent) => agent.id);
+    expect(ids.filter((id) => id === "antigravity@local")).toHaveLength(1);
+    expect(ids).toContain("codex@local");
   });
 
   it("writes claude .mcp.json with absolute home", () => {

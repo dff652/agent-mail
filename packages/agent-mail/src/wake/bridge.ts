@@ -5,8 +5,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { acquireFileLockSync } from "../atomic-file.js";
+import { AgentMailError } from "../errors.js";
 import { OutboundHttpError, outboundRequest } from "../outbound-http.js";
 import {
   businessState,
@@ -26,11 +28,14 @@ import {
   preflightWakeRunner,
   runWakeRunner,
   WAKE_COST_NOTICE,
+  WAKE_RUNNERS,
   type RunnerResult,
   type WakeRunnerConfig,
   type WakeRunnerExecutor,
   type WakeRunnerName,
 } from "./runner.js";
+
+const RUNNER_REQUIRED = `live wake requires --runner ${WAKE_RUNNERS.join("|")}`;
 
 export interface BridgeOptions {
   home: string;
@@ -75,6 +80,12 @@ export interface BridgeProcessResult {
   timed_out?: boolean;
   cancelled?: boolean;
   failure_class?: RunnerResult["failure_class"];
+}
+
+function failedWake(result: BridgeProcessResult): boolean {
+  return result.action === "reject" ||
+    result.action === "runner_failed" ||
+    result.action === "verification_failed";
 }
 
 function snapshotFor(
@@ -125,7 +136,7 @@ function snapshotFor(
 
 function runnerConfig(opts: BridgeOptions): WakeRunnerConfig {
   if (opts.runner === "none") {
-    throw new Error("live wake requires --runner codex, grok, or claude");
+    throw new Error(RUNNER_REQUIRED);
   }
   return {
     home: path.resolve(opts.home),
@@ -180,7 +191,7 @@ export function processEventLocal(
   if (result.action === "run") {
     if (opts.runner === "none") {
       result.action = "reject";
-      result.reason = "wake runner must be codex, grok, or claude";
+      result.reason = RUNNER_REQUIRED;
       return result;
     }
     const invocation = buildRunnerInvocation(
@@ -259,7 +270,7 @@ export async function processEventLocalLive(
   }
   if (opts.runner === "none") {
     result.action = "reject";
-    result.reason = "live wake requires --runner codex, grok, or claude";
+    result.reason = RUNNER_REQUIRED;
     return result;
   }
 
@@ -286,13 +297,18 @@ export async function processEventLocalLive(
       return result;
     }
   }
-  appendRuntimeLog(opts.home, "runner.started", "success", {
-    actor: opts.recipient,
-    context: { ...context, mode, cost_notice_shown: true },
-  });
-
   let runnerResult: RunnerResult;
   try {
+    // The mailbox requires a claim before ack. Prepare receipts here so the
+    // model can just acknowledge and summarize them.
+    if (opts.signal?.aborted) return result;
+    if (item.message.type === "done" || item.message.type === "error") {
+      item.delivery = svc.claim(event.message_id, opts.recipient, { home: opts.home });
+    }
+    appendRuntimeLog(opts.home, "runner.started", "success", {
+      actor: opts.recipient,
+      context: { ...context, mode, cost_notice_shown: true },
+    });
     runnerResult = await (opts.runnerExecutor ?? runWakeRunner)(
       config,
       event,
@@ -411,20 +427,60 @@ export async function pollAndProcessLocalLive(
     });
     const results: BridgeProcessResult[] = [];
     for (const event of coalesceEvents(raw)) {
+      if (opts.signal?.aborted) break;
       const result = await processEventLocalLive(opts, event);
       results.push(result);
-      if (
-        result.action === "reject" ||
-        result.action === "runner_failed" ||
-        result.action === "verification_failed"
-      ) {
-        break;
-      }
+      if (failedWake(result)) break;
     }
     return results;
   } finally {
     release();
   }
+}
+
+/** Poll sequentially without retaining prior ticks or automatically retrying paid wakes. */
+export async function runBridgeLoop(
+  opts: BridgeOptions,
+  loop: {
+    maxTicks?: number | null;
+    intervalMs?: number;
+    onTick?: (results: BridgeProcessResult[], tick: number) => void;
+  } = {},
+): Promise<{ ticks: number; count: number; failed: boolean }> {
+  const maxTicks = loop.maxTicks === undefined ? 1 : loop.maxTicks;
+  const intervalMs = loop.intervalMs ?? 2000;
+  if (
+    (maxTicks !== null &&
+      (!Number.isInteger(maxTicks) || maxTicks < 1 || maxTicks > 1_000_000)) ||
+    !Number.isInteger(intervalMs) ||
+    intervalMs < 100 ||
+    intervalMs > 86_400_000
+  ) {
+    throw new AgentMailError(
+      "bridge ticks must be 1..1000000 and interval must be 100..86400000 milliseconds",
+      2,
+    );
+  }
+
+  let ticks = 0;
+  let count = 0;
+  while (!opts.signal?.aborted && (maxTicks === null || ticks < maxTicks)) {
+    const results = opts.dryRun
+      ? pollAndProcessLocal(opts)
+      : await pollAndProcessLocalLive(opts);
+    ticks += 1;
+    count += results.length;
+    loop.onTick?.(results, ticks);
+    if (results.some(failedWake)) return { ticks, count, failed: true };
+    if (!opts.signal?.aborted && (maxTicks === null || ticks < maxTicks)) {
+      try {
+        await delay(intervalMs, undefined, { signal: opts.signal });
+      } catch (error) {
+        if (!opts.signal?.aborted) throw error;
+      }
+    }
+  }
+  return { ticks, count, failed: false };
 }
 
 export async function pollHubEvents(

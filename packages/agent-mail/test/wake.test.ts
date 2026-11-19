@@ -11,9 +11,12 @@ import * as svc from "../src/services.js";
 import {
   pollAndProcessLocal,
   pollAndProcessLocalLive,
+  runBridgeLoop,
 } from "../src/wake/bridge.js";
 import {
+  ANTIGRAVITY_MCP_CONFIG,
   buildRunnerInvocation,
+  preflightWakeRunner,
   runChildProcess,
   validateProjectMcpConfig,
   WAKE_COST_NOTICE,
@@ -315,6 +318,82 @@ describe("wake runner adapters", () => {
     },
   );
 
+  it.each(["read", "write"] as const)("constrains agy print mode for %s wakes", (mode) => {
+    const snapshot = runnerSnapshot("do not leak this task body");
+    const invocation = buildRunnerInvocation(
+      {
+        home: "/tmp/project/.agent-mail",
+        project: "/tmp/project",
+        recipient: "antigravity@local",
+        runner: "antigravity",
+        executable: mode === "write" ? "/custom/bin/agy" : undefined,
+      },
+      { kind: "message.created", message_id: snapshot.message.id },
+      snapshot,
+      mode,
+    );
+    const [binary, sandbox, settingsFlag, settingsJson, format, json, disableSlash, print, prompt] =
+      invocation.command;
+    expect(binary).toBe(mode === "write" ? "/custom/bin/agy" : "agy");
+    expect([sandbox, settingsFlag, format, json, disableSlash, print]).toEqual([
+      "--sandbox", "--settings", "--output-format", "json", "--disable-slash-commands", "-p",
+    ]);
+    expect(invocation.stdin).toBeNull();
+    expect(prompt).toContain(snapshot.message.id);
+    expect(prompt).toContain("only ack the preclaimed delivery, report a summary, and exit");
+    expect(prompt).toContain("Never send a new task automatically in response");
+    expect(prompt).not.toContain(snapshot.message.body_md);
+    expect(JSON.parse(settingsJson)).toMatchObject({
+      agentMode: mode === "write" ? "accept-edits" : "",
+      toolPermission: "request-review",
+      allowNonWorkspaceAccess: false,
+      permissions: {
+        allow: expect.arrayContaining([
+          "mcp(agent-mail_agent-mail/comm_send)",
+          "mcp(agent-mail_agent-mail/comm_ack)",
+        ]),
+        deny: expect.arrayContaining([
+          "command(*)",
+          mode === "read" ? "write_file(*)" : "write_file(.agent-mail/)",
+        ]),
+      },
+    });
+    expect(settingsJson).not.toContain("mcp(*)");
+    expect(invocation.command).not.toContain("--dangerously-skip-permissions");
+    if (mode === "write") expect(settingsJson).not.toContain("write_file(*)");
+  });
+
+  it("preflights only the native Antigravity plugin's local MCP configuration", () => {
+    const home = tmpHome();
+    const project = path.dirname(home);
+    const recipient = "antigravity@local";
+    const config = { home, project, recipient, runner: "antigravity" as const };
+    const configPath = path.join(project, ANTIGRAVITY_MCP_CONFIG);
+    const server = {
+      command: process.execPath,
+      args: [path.join(project, "dist", "mcp", "stdio.js")],
+      env: { AGENT_MAIL_HOME: home, AGENT_MAIL_ID: recipient },
+    };
+    expect(() => validateProjectMcpConfig(config)).toThrow(/mcp_config\.json/);
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const writeConfig = (servers: object) =>
+      fs.writeFileSync(configPath, JSON.stringify({ mcpServers: servers }));
+    writeConfig({ "agent-mail": server });
+    expect(() => preflightWakeRunner({ ...config, executable: process.execPath })).not.toThrow();
+    expect(() => preflightWakeRunner({ ...config, executable: project })).toThrow(/not a file/);
+    expect(() => validateProjectMcpConfig({ ...config, recipient: "codex@local" })).toThrow(/identity mismatch/);
+    writeConfig({ "agent-mail": { ...server, env: { ...server.env, AGENT_MAIL_HOME: project } } });
+    expect(() => validateProjectMcpConfig(config)).toThrow(/HOME does not match/);
+    writeConfig({ "agent-mail": { ...server, disabled: true } });
+    expect(() => validateProjectMcpConfig(config)).toThrow(/disabled/);
+    writeConfig({ "agent-mail": { ...server, url: "https://example.invalid" } });
+    expect(() => validateProjectMcpConfig(config)).toThrow(/local agent-mail MCP server/);
+    writeConfig({ "agent-mail": server, other: server });
+    expect(() => validateProjectMcpConfig(config)).toThrow(/one local agent-mail MCP server/);
+    fs.writeFileSync(configPath, "{broken");
+    expect(() => validateProjectMcpConfig(config)).toThrow(/invalid project Agent Mail MCP config/);
+  });
+
   it.each(["codex", "grok", "claude"] as const)(
     "%s preflight binds project, home, executable, and identity",
     (runner) => {
@@ -490,6 +569,126 @@ AGENT_MAIL_ID = "${recipient}"
     expect(result.exit_code).toBe(130);
     expect(result.cancelled).toBe(true);
     expect(result.failure_class).toBe("cancelled");
+  });
+});
+
+describe("bridge loop", () => {
+  it("polls for newly queued tasks and processes both directions and their receipts", async () => {
+    const home = tmpHome();
+    const codex = "codex@local";
+    const antigravity = "antigravity@local";
+    const executor: WakeRunnerExecutor = async (config, event, item, mode) => {
+      expect(mode).toBe("read");
+      if (item.message.type === "task") {
+        svc.claim(event.message_id, config.recipient, { home });
+        svc.send({
+          from_id: config.recipient,
+          to: item.message.from_id,
+          type: config.runner === "antigravity" ? "done" : "error",
+          body: "fixture receipt",
+          home,
+          task_id: item.message.task_id,
+          thread_id: item.message.thread_id,
+        });
+      } else {
+        expect(item.delivery.status).toBe("claimed");
+        expect(item.delivery.claim_by).toBe(config.recipient);
+      }
+      svc.ack(event.message_id, config.recipient, { home });
+      return runnerOk();
+    };
+    const toAntigravity = {
+      home, recipient: antigravity, consumerId: "wake:antigravity:test",
+      runner: "antigravity" as const, runnerExecutor: executor,
+    };
+    const toCodex = {
+      home, recipient: codex, consumerId: "wake:codex:test",
+      runner: "codex" as const, runnerExecutor: executor,
+    };
+    const queueTasks = () => {
+      for (const [from_id, to] of [[codex, antigravity], [antigravity, codex]]) {
+        svc.send({ from_id, to, type: "task", effect: "read", body: "fixture task", home });
+      }
+    };
+    const first = await runBridgeLoop(toAntigravity, {
+      maxTicks: 2,
+      intervalMs: 100,
+      onTick(results, tick) {
+        if (tick === 1) {
+          expect(results).toEqual([]);
+          queueTasks();
+        } else {
+          expect(results).toMatchObject([{ action: "acked", business_state: "complete" }]);
+        }
+      },
+    });
+    expect(first).toEqual({ ticks: 2, count: 1, failed: false });
+    expect(await runBridgeLoop(toCodex)).toEqual({ ticks: 1, count: 2, failed: false });
+    expect(await runBridgeLoop(toAntigravity)).toEqual({ ticks: 1, count: 1, failed: false });
+    for (const { recipient, consumerId } of [toAntigravity, toCodex]) {
+      expect(svc.inbox(recipient, { home })).toEqual([]);
+      expect(svc.listOutboxEvents(recipient, { home, consumerId })).toEqual([]);
+    }
+    expect(svc.tail({ home }).map((message) => message.type).sort()).toEqual([
+      "done", "error", "task", "task",
+    ]);
+  });
+
+  it("reports repeated dry-run plans without launching or moving the cursor", async () => {
+    const home = tmpHome();
+    const recipient = "antigravity@local";
+    const consumerId = "wake:dry:antigravity";
+    const task = svc.send({
+      from_id: "codex@local", to: recipient, type: "task", effect: "read", body: "test", home,
+    });
+    const summary = await runBridgeLoop({
+      home, recipient, consumerId, runner: "antigravity", dryRun: true,
+      runnerExecutor: async () => { throw new Error("dry-run launched a runner"); },
+    }, {
+      maxTicks: 2,
+      intervalMs: 100,
+      onTick(results) {
+        expect(results).toMatchObject([{ message_id: task.id, action: "run", mode: "read" }]);
+      },
+    });
+    expect(summary).toEqual({ ticks: 2, count: 2, failed: false });
+    expect(svc.inbox(recipient, { home })[0].delivery.status).toBe("pending");
+    expect(svc.listOutboxEvents(recipient, { home, consumerId })).toHaveLength(1);
+  });
+
+  it("cancels an idle forever loop and validates loop arguments", async () => {
+    const home = tmpHome();
+    const controller = new AbortController();
+    const opts = {
+      home, recipient: "antigravity@local", consumerId: "wake:idle:antigravity",
+      runner: "antigravity" as const, signal: controller.signal,
+    };
+    await expect(runBridgeLoop(opts, { maxTicks: 0 })).rejects.toThrow(/bridge ticks/);
+    await expect(runBridgeLoop(opts, { intervalMs: 99 })).rejects.toThrow(/interval/);
+    const result = await runBridgeLoop(opts, {
+      maxTicks: null,
+      intervalMs: 60_000,
+      onTick() { setTimeout(() => controller.abort(), 0); },
+    });
+    expect(result).toEqual({ ticks: 1, count: 0, failed: false });
+  });
+
+  it("stops on the first failed wake and keeps the event for a deliberate retry", async () => {
+    const home = tmpHome();
+    const recipient = "antigravity@local";
+    const consumerId = "wake:failure:antigravity";
+    svc.send({ from_id: "codex@local", to: recipient, type: "message", body: "test", home });
+    let calls = 0;
+    const summary = await runBridgeLoop({
+      home, recipient, consumerId, runner: "antigravity",
+      runnerExecutor: async () => {
+        calls += 1;
+        return { ...runnerOk(), exit_code: 9, failure_class: "runner_exit" };
+      },
+    }, { maxTicks: 3, intervalMs: 100 });
+    expect(summary).toEqual({ ticks: 1, count: 1, failed: true });
+    expect(calls).toBe(1);
+    expect(svc.listOutboxEvents(recipient, { home, consumerId })).toHaveLength(1);
   });
 });
 

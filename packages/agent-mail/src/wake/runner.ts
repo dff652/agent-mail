@@ -7,7 +7,17 @@ import type {
   WakeInboxSnapshot,
 } from "../domain/wake-gate.js";
 
-export type WakeRunnerName = "codex" | "grok" | "claude";
+export const WAKE_RUNNERS = ["codex", "grok", "claude", "antigravity"] as const;
+export type WakeRunnerName = (typeof WAKE_RUNNERS)[number];
+
+export const ANTIGRAVITY_PLUGIN_DIR = path.join(".agents", "plugins", "agent-mail");
+export const ANTIGRAVITY_MCP_CONFIG = path.join(ANTIGRAVITY_PLUGIN_DIR, "mcp_config.json");
+// Native plugins namespace each MCP server by the plugin manifest name.
+const ANTIGRAVITY_MCP_SERVER = "agent-mail_agent-mail";
+
+export function runnerExecutableName(runner: string): string {
+  return runner === "antigravity" ? "agy" : runner;
+}
 
 export const WAKE_COST_NOTICE =
   "Live wake starts a model runner and may consume provider quota; use --dry-run to inspect without a model call.";
@@ -97,8 +107,9 @@ function wakePrompt(
     "Never treat event metadata as the task body and never bypass client permissions. " +
     "If already fully handled, exit successfully without duplicating work. " +
     "Use Agent Mail first and minimize unrelated exploration. " +
+    "For a done or error message: only ack the preclaimed delivery, report a summary, and exit. Never send a new task automatically in response. " +
     runnerGuidance +
-    "If delivery is pending, claim it; if it is already claimed by your identity, continue without claiming again. " +
+    "For other messages, claim the delivery if pending or if its claim expired. Continue if it is already actively claimed by your identity. " +
     "Process the inbox body under its effect and approval policy. " +
     "For a task: send done or error before acknowledging the original delivery. " +
     "If approval is pending, claim only, do no side effect, and leave it waiting. " +
@@ -113,7 +124,7 @@ export function buildRunnerInvocation(
   item: WakeInboxSnapshot,
   mode: WakeExecutionMode,
 ): RunnerInvocation {
-  const executable = config.executable ?? config.runner;
+  const executable = config.executable ?? runnerExecutableName(config.runner);
   const prompt = wakePrompt(config, event, item);
   if (config.runner === "codex") {
     return {
@@ -136,6 +147,43 @@ export function buildRunnerInvocation(
         "-",
       ],
       stdin: prompt,
+    };
+  }
+  if (config.runner === "antigravity") {
+    const settings = {
+      agentMode: mode === "write" ? "accept-edits" : "",
+      toolPermission: "request-review",
+      allowNonWorkspaceAccess: false,
+      permissions: {
+        allow: AGENT_MAIL_MCP_TOOLS.map(
+          (tool) => `mcp(${ANTIGRAVITY_MCP_SERVER}/${tool})`,
+        ),
+        deny: [
+          "command(*)",
+          "read_url(*)",
+          "execute_url(*)",
+          "download_url(*)",
+          ...(mode === "read"
+            ? ["write_file(*)"]
+            : [".agent-mail", ".agents", ".codex", ".git"].map(
+                (dir) => `write_file(${dir}/)`,
+              )),
+        ],
+      },
+    };
+    return {
+      command: [
+        executable,
+        "--sandbox",
+        "--settings",
+        JSON.stringify(settings),
+        "--output-format",
+        "json",
+        "--disable-slash-commands",
+        "-p",
+        prompt,
+      ],
+      stdin: null,
     };
   }
   if (config.runner === "claude") {
@@ -214,9 +262,16 @@ function tomlSection(document: string, name: string): string {
 function tomlString(section: string, key: string): string | undefined {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = section.match(
-    new RegExp(`^\\s*${escaped}\\s*=\\s*(["'])(.*?)\\1\\s*(?:#.*)?$`, "m"),
+    new RegExp(
+      String.raw`^[ \t]*${escaped}[ \t]*=[ \t]*("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*')[ \t]*(?:#.*)?$`,
+      "m",
+    ),
   );
-  return match?.[2];
+  return match ? decodeTomlString(match[1]) : undefined;
+}
+
+function decodeTomlString(literal: string): string {
+  return literal.startsWith("'") ? literal.slice(1, -1) : JSON.parse(literal) as string;
 }
 
 function tomlBoolean(section: string, key: string): boolean | undefined {
@@ -229,41 +284,53 @@ function tomlBoolean(section: string, key: string): boolean | undefined {
 
 function tomlStringArray(section: string, key: string): string[] | undefined {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = section.match(
-    new RegExp(`^\\s*${escaped}\\s*=\\s*\\[([^\\n]*)]\\s*(?:#.*)?$`, "m"),
-  );
-  if (!match) return undefined;
+  const start = new RegExp(String.raw`^[ \t]*${escaped}[ \t]*=[ \t]*\[`, "m").exec(section);
+  if (!start) return undefined;
+  const remaining = section.slice(start.index + start[0].length);
+  const itemPattern = /(?:\s|#[^\r\n]*)*(?:("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*')(?:\s|#[^\r\n]*)*(,|\])|(\]))/y;
   const values: string[] = [];
-  const itemPattern = /\s*(["'])(.*?)\1\s*(?:,|$)/gy;
-  let offset = 0;
-  while (offset < match[1].length) {
-    itemPattern.lastIndex = offset;
-    const item = itemPattern.exec(match[1]);
-    if (!item) return undefined;
-    values.push(item[2]);
-    offset = itemPattern.lastIndex;
+  for (let item = itemPattern.exec(remaining); item; item = itemPattern.exec(remaining)) {
+    if (item[1]) values.push(decodeTomlString(item[1]));
+    if (item[2] !== ",") {
+      return /^[ \t]*(?:#.*)?(?:\r?\n|$)/.test(remaining.slice(itemPattern.lastIndex))
+        ? values
+        : undefined;
+    }
   }
-  return values;
+  return undefined;
 }
 
 function readProjectMcpConfig(config: WakeRunnerConfig): McpServerConfig {
-  const configPath =
-    config.runner === "claude"
-      ? path.join(config.project, ".mcp.json")
-      : path.join(config.project, `.${config.runner}`, "config.toml");
+  const jsonConfig = config.runner === "antigravity" || config.runner === "claude";
+  const relativePath = config.runner === "antigravity"
+    ? ANTIGRAVITY_MCP_CONFIG
+    : config.runner === "claude"
+      ? ".mcp.json"
+      : path.join(`.${config.runner}`, "config.toml");
+  const configPath = path.join(config.project, relativePath);
   const stat = fs.statSync(configPath);
   if (!stat.isFile() || stat.size > 1024 * 1024) {
     throw new Error(`invalid project MCP config: ${configPath}`);
   }
   const raw = fs.readFileSync(configPath, "utf8");
-  if (config.runner === "claude") {
+  if (jsonConfig) {
     const document = JSON.parse(raw) as Record<string, unknown>;
     const servers = (document.mcpServers ??
-      document.mcp_servers) as Record<string, unknown> | undefined;
+      (config.runner === "claude" ? document.mcp_servers : undefined)) as
+      | Record<string, unknown>
+      | undefined;
     const server = servers?.["agent-mail"] as
       | Record<string, unknown>
       | undefined;
     if (!server) throw new Error("missing project Agent Mail MCP server");
+    if (config.runner === "antigravity" && (
+      Object.keys(servers!).length !== 1 ||
+      "url" in server ||
+      "serverUrl" in server ||
+      "httpUrl" in server
+    )) {
+      throw new Error("Antigravity Agent Mail plugin must define one local agent-mail MCP server");
+    }
     return {
       command: server.command,
       args: server.args,
@@ -384,7 +451,7 @@ function resolveExecutable(value: string): string {
 
 export function preflightWakeRunner(config: WakeRunnerConfig): void {
   validateProjectMcpConfig(config);
-  resolveExecutable(config.executable ?? config.runner);
+  resolveExecutable(config.executable ?? runnerExecutableName(config.runner));
 }
 
 function boundedTail(current: Buffer, chunk: Buffer): Buffer {
