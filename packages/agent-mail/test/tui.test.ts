@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import * as svc from "../src/services.js";
 import {
@@ -34,6 +34,17 @@ function tempProject(label: string): { root: string; home: string } {
 
 function typeKeys(model: TuiModel, value: string): void {
   for (const character of value) model.handleKey(character);
+}
+
+function requestApproval(home: string) {
+  return svc.send({
+    from_id: "antigravity@local",
+    to: "codex@local",
+    type: "task",
+    effect: "write",
+    body: "private task body for approval",
+    home,
+  });
 }
 
 function fakeTerminal(): {
@@ -196,6 +207,117 @@ describe("TUI S1 operations console", () => {
     typeKeys(model, "policy.effect_rules");
     model.handleKey("enter");
     expect(svc.configGet("policy.effect_rules", { home }).value).toEqual({});
+  });
+
+  it("renders approval metadata and requires the selected full ID to approve", () => {
+    const { home } = tempProject("am-tui-approval-confirm");
+    const task = requestApproval(home);
+    const id = String(svc.getApprovalForTask(task.task_id!, { home })!.id);
+    const recipient = "codex@local";
+    const consumerId = "wake:tui:approval";
+    const event = svc.listOutboxEvents(recipient, { home })[0];
+    svc.ackOutbox(consumerId, recipient, event.sequence, { home });
+    const model = new TuiModel(home);
+    model.handleKey("3");
+    expect(model.page).toBe("approvals");
+    const rendered = renderTui(model);
+    for (const field of ["[3] Approvals", id, task.id, task.task_id!, "pending", recipient]) {
+      expect(rendered).toContain(field);
+    }
+    expect(rendered).not.toContain("private task body");
+
+    model.handleKey("a");
+    expect(model.inputMode).toBe("confirm");
+    const compact = renderTui(model, { columns: 40, rows: 12 });
+    expect(compact).toContain(id);
+    expect(compact).toContain("Type the full ID");
+    typeKeys(model, id.slice(0, -1));
+    model.handleKey("enter");
+    expect(model.status).toContain("did not match");
+    expect(svc.getApprovalForTask(task.task_id!, { home })?.status).toBe("pending");
+
+    model.handleKey("a");
+    model.handleKey("escape");
+    expect(svc.getApprovalForTask(task.task_id!, { home })?.status).toBe("pending");
+    model.handleKey("a");
+    const other = requestApproval(home);
+    model.refresh();
+    expect(model.approvalConfirmationId).toBe(id);
+    expect(model.approvals[model.selectedApprovalIndex].id).toBe(id);
+    typeKeys(model, id);
+    model.handleKey("enter");
+    expect(model.status).toBe("Approval approved");
+    expect(svc.getApprovalForTask(task.task_id!, { home })).toMatchObject({
+      status: "approved", decided_by: "human@local",
+    });
+    expect(svc.getApprovalForTask(other.task_id!, { home })?.status).toBe("pending");
+    expect(renderTui(model)).toContain("Decided by human@local");
+    expect(svc.getStore(home).getOutboxCursor(consumerId, recipient)).toBe(event.sequence);
+    expect(svc.listOutboxEvents(recipient, { home, consumerId }))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ kind: "approval.approved" })]));
+  });
+
+  it("navigates vertically and rejects only the selected pending approval", () => {
+    const { home } = tempProject("am-tui-approval-reject");
+    requestApproval(home);
+    requestApproval(home);
+    const model = new TuiModel(home);
+    model.handleKey("3");
+    const [first, second] = model.approvals;
+    model.handleKey("down");
+    expect(model.selectedApprovalIndex).toBe(1);
+    model.handleKey("k");
+    expect(model.selectedApprovalIndex).toBe(0);
+    model.handleKey("j");
+    model.handleKey("up");
+    model.handleKey("j");
+    model.handleKey("x");
+    expect(model.inputMode).toBe("normal");
+    expect(model.status).toBe("Approval rejected");
+    const approvals = svc.listApprovals({ home, status: null });
+    expect(approvals.find(({ id }) => id === second.id)).toMatchObject({
+      status: "rejected", decided_by: "human@local",
+    });
+    expect(approvals.find(({ id }) => id === first.id)?.status).toBe("pending");
+    model.handleKey("a");
+    expect(model.inputMode).toBe("normal");
+    expect(model.status).toBe("Select a pending approval");
+    model.handleKey("x");
+    expect(model.status).toBe("Select a pending approval");
+  });
+
+  it("projects only approval fields and sanitizes them before rendering", () => {
+    const { home } = tempProject("am-tui-approval-redaction");
+    const records = [{
+      id: "apr_01 \u001b[31mtoken=id-secret\u001b[0m",
+      task_id: "tsk_01 password=task-secret",
+      message_id: "msg_01 authorization=message-secret",
+      requested_for: "\u001b[2Jcodex@local api_key=recipient-secret",
+      status: "token=status-secret",
+      decided_by: "human@local cookie=actor-secret",
+      note: "private approval note",
+      get body_md() { throw new Error("body_md must not be read"); },
+    }];
+    const listed = vi.spyOn(svc, "listApprovals").mockReturnValue(records);
+    try {
+      const model = new TuiModel(home);
+      model.handleKey("3");
+      expect(listed).toHaveBeenCalledExactlyOnceWith({ home, status: null });
+      expect(Object.keys(model.approvals[0])).toEqual([
+        "id", "task_id", "message_id", "requested_for", "status", "decided_by",
+      ]);
+      const screen = renderTui(model, { columns: 100 });
+      expect(screen).toContain("ID apr_01 token=<redacted>");
+      expect(screen).toContain("Task tsk_01 password=<redacted>");
+      expect(screen).toContain("Message msg_01 authorization=<redacted>");
+      expect(screen).toContain("For codex@local api_key=<redacted>");
+      expect(screen).toContain("Decided by human@local cookie=<redacted>");
+      expect(screen).not.toContain("-secret");
+      expect(screen).not.toContain("private approval note");
+      expect(screen.indexOf("\u001b[2J")).toBe(screen.lastIndexOf("\u001b[2J"));
+    } finally {
+      listed.mockRestore();
+    }
   });
 
   it("redacts credential text and ignores runtime-log payloads", () => {

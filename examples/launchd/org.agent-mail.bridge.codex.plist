@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.agent-mail.bridge.codex</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/absolute/path/to/node/bin/node</string>
+    <string>/absolute/path/to/agent-mail/dist/cli.js</string>
+    <string>bridge</string>
+    <string>--path</string>
+    <string>/absolute/path/to/project</string>
+    <string>--recipient</string>
+    <string>codex@local</string>
+    <string>--runner</string>
+    <string>codex</string>
+    <string>--executable</string>
+    <string>/absolute/path/to/codex</string>
+    <string>--forever</string>
+    <string>--interval-ms</string>
+    <string>2000</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/absolute/path/to/project</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/absolute/path/to/node/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/absolute/path/to/project/.agent-mail/logs/bridge-codex.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/absolute/path/to/project/.agent-mail/logs/bridge-codex.stderr.log</string>
+</dict>
+</plist>

@@ -108,6 +108,26 @@ describe("TypeScript doctor", () => {
 
     expect(checkRunnerBinary("codex", directory).status).toBe("pass");
     expect(checkRunnerBinary("grok", directory).status).toBe("warn");
+    expect(checkRunnerBinary("antigravity", directory)).toMatchObject({
+      id: "runner.antigravity",
+      status: "warn",
+      message: "agy CLI not found on PATH",
+    });
+  });
+
+  it("checks only requested runners and resolves the Antigravity CLI as agy", async () => {
+    const root = tempDir("am-doctor-antigravity");
+    const home = svc.initProject(path.join(root, ".agent-mail"));
+    const executable = path.join(root, "agy");
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const report = await runDoctor(home, { runners: ["codex", "antigravity"], pathEnv: root });
+    expect(report.ok).toBe(true);
+    expect(report.deep).toBe(true);
+    expect(report.checks.filter((item) => item.id.startsWith("runner."))).toMatchObject([
+      { id: "runner.codex", status: "warn" },
+      { id: "runner.antigravity", status: "pass", message: expect.stringContaining(executable) },
+    ]);
   });
 
   it("recognizes environment-only remote connection settings", async () => {

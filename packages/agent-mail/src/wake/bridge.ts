@@ -2,11 +2,14 @@
  * Local wake bridge: body-free outbox → constrained runner → business-state
  * verification → cursor acknowledgement.
  */
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { acquireFileLockSync } from "../atomic-file.js";
+import { AgentMailError } from "../errors.js";
 import { OutboundHttpError, outboundRequest } from "../outbound-http.js";
 import {
   businessState,
@@ -26,11 +29,14 @@ import {
   preflightWakeRunner,
   runWakeRunner,
   WAKE_COST_NOTICE,
+  WAKE_RUNNERS,
   type RunnerResult,
   type WakeRunnerConfig,
   type WakeRunnerExecutor,
   type WakeRunnerName,
 } from "./runner.js";
+
+const RUNNER_REQUIRED = `live wake requires --runner ${WAKE_RUNNERS.join("|")}`;
 
 export interface BridgeOptions {
   home: string;
@@ -45,6 +51,9 @@ export interface BridgeOptions {
   signal?: AbortSignal;
   allowWrite?: boolean;
   dryRun?: boolean;
+  tasksOnly?: boolean;
+  notify?: boolean;
+  notifier?: (notice: BridgeNotice) => void;
   /** Deterministic local fixture hook; production defaults to runWakeRunner. */
   runnerExecutor?: WakeRunnerExecutor;
   /** When set, poll remote hub events; else local store. */
@@ -75,6 +84,68 @@ export interface BridgeProcessResult {
   timed_out?: boolean;
   cancelled?: boolean;
   failure_class?: RunnerResult["failure_class"];
+}
+
+export interface BridgeNotice {
+  recipient: string;
+  message_id: string;
+  task_id: string | null;
+  action: BridgeProcessResult["action"];
+  business_state: string;
+  failure_class: RunnerResult["failure_class"];
+}
+
+function failedWake(result: BridgeProcessResult): boolean {
+  return result.action === "reject" ||
+    result.action === "runner_failed" ||
+    result.action === "verification_failed";
+}
+
+function notifyMacOS(notice: BridgeNotice): void {
+  if (process.platform !== "darwin") return;
+  const message = [
+    notice.recipient,
+    notice.message_id,
+    notice.task_id,
+    notice.action,
+    notice.business_state,
+    notice.failure_class,
+  ].filter(Boolean).join(" · ");
+  spawnSync("osascript", [
+    "-e",
+    "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run",
+    "Agent Mail",
+    message,
+  ], { stdio: "ignore", timeout: 2_000 });
+}
+
+function notifyWake(
+  opts: BridgeOptions,
+  item: WakeInboxSnapshot,
+  result: BridgeProcessResult,
+): void {
+  if (!opts.notify || opts.dryRun || (
+    result.business_state !== "waiting_approval" &&
+    result.action !== "acked" &&
+    !failedWake(result)
+  )) return;
+
+  try {
+    (opts.notifier ?? notifyMacOS)({
+      recipient: opts.recipient,
+      message_id: result.message_id,
+      task_id: item.message.task_id,
+      action: result.action,
+      business_state: result.business_state,
+      failure_class: result.failure_class ?? null,
+    });
+  } catch {
+    // Notifications are best effort.
+  }
+}
+
+function isReceipt(item: WakeInboxSnapshot): boolean {
+  return item.message.type === "done" || item.message.type === "error";
 }
 
 function snapshotFor(
@@ -125,7 +196,7 @@ function snapshotFor(
 
 function runnerConfig(opts: BridgeOptions): WakeRunnerConfig {
   if (opts.runner === "none") {
-    throw new Error("live wake requires --runner codex, grok, or claude");
+    throw new Error(RUNNER_REQUIRED);
   }
   return {
     home: path.resolve(opts.home),
@@ -157,13 +228,15 @@ function initialResult(
     allowWrite: Boolean(opts.allowWrite),
     recipient: opts.recipient,
   });
+  const deferReceipt = opts.tasksOnly && isReceipt(item) &&
+    event.recipient === opts.recipient && event.kind === "message.created";
   return {
     sequence: event.sequence,
     message_id: event.message_id,
-    action: plan.action,
-    mode: plan.mode,
+    action: deferReceipt ? "ack_only" : plan.action,
+    mode: deferReceipt ? null : plan.mode,
     business_state: plan.business_state,
-    reason: plan.reason,
+    reason: deferReceipt ? "receipt left in inbox for the interactive session" : plan.reason,
   };
 }
 
@@ -180,19 +253,19 @@ export function processEventLocal(
   if (result.action === "run") {
     if (opts.runner === "none") {
       result.action = "reject";
-      result.reason = "wake runner must be codex, grok, or claude";
-      return result;
-    }
-    const invocation = buildRunnerInvocation(
-      runnerConfig(opts),
-      event,
-      item,
-      result.mode === "write" ? "write" : "read",
-    );
-    result.command = invocation.command;
-    if (!opts.dryRun) {
-      result.action = "reject";
-      result.reason = "live wake requires the asynchronous bridge path";
+      result.reason = RUNNER_REQUIRED;
+    } else {
+      const invocation = buildRunnerInvocation(
+        runnerConfig(opts),
+        event,
+        item,
+        result.mode === "write" ? "write" : "read",
+      );
+      result.command = invocation.command;
+      if (!opts.dryRun) {
+        result.action = "reject";
+        result.reason = "live wake requires the asynchronous bridge path";
+      }
     }
   }
   if (result.action === "ack_only" && !opts.dryRun) {
@@ -200,6 +273,7 @@ export function processEventLocal(
       home: opts.home,
     });
   }
+  notifyWake(opts, item, result);
   return result;
 }
 
@@ -223,7 +297,18 @@ export async function processEventLocalLive(
   if (opts.dryRun) return processEventLocal(opts, event);
 
   const item = snapshotFor(opts.home, opts.recipient, event.message_id);
+  const result = await processLiveSnapshot(opts, event, item);
+  notifyWake(opts, item, result);
+  return result;
+}
+
+async function processLiveSnapshot(
+  opts: BridgeOptions,
+  event: OutboxEventRow,
+  item: WakeInboxSnapshot,
+): Promise<BridgeProcessResult> {
   const result = initialResult(opts, event, item);
+  const receipt = isReceipt(item);
   const context = {
     consumer_id: opts.consumerId,
     event_id: event.id,
@@ -248,7 +333,8 @@ export async function processEventLocalLive(
     svc.ackOutbox(opts.consumerId, opts.recipient, event.sequence, {
       home: opts.home,
     });
-    appendRuntimeLog(opts.home, "wake.deduplicated", "success", {
+    const operation = opts.tasksOnly && receipt ? "wake.receipt_deferred" : "wake.deduplicated";
+    appendRuntimeLog(opts.home, operation, "success", {
       actor: opts.recipient,
       context: {
         ...context,
@@ -259,7 +345,7 @@ export async function processEventLocalLive(
   }
   if (opts.runner === "none") {
     result.action = "reject";
-    result.reason = "live wake requires --runner codex, grok, or claude";
+    result.reason = RUNNER_REQUIRED;
     return result;
   }
 
@@ -286,13 +372,31 @@ export async function processEventLocalLive(
       return result;
     }
   }
-  appendRuntimeLog(opts.home, "runner.started", "success", {
-    actor: opts.recipient,
-    context: { ...context, mode, cost_notice_shown: true },
-  });
-
   let runnerResult: RunnerResult;
   try {
+    // The mailbox requires a claim before ack. Prepare receipts here so the
+    // model can just acknowledge and summarize them.
+    if (opts.signal?.aborted) return result;
+    if (receipt) {
+      const { status, claim_by, claim_until } = item.delivery;
+      const expired = status === "claimed" && claim_until !== null &&
+        claim_until.getTime() <= Date.now();
+      if (status === "pending" || expired) {
+        item.delivery = svc.claim(event.message_id, opts.recipient, { home: opts.home });
+      } else if (claim_by !== opts.recipient) {
+        result.action = "reject";
+        result.reason = "receipt already has another active claim";
+        appendRuntimeLog(opts.home, "wake.rejected", "error", {
+          actor: opts.recipient,
+          context: { ...context, reason: result.reason },
+        });
+        return result;
+      }
+    }
+    appendRuntimeLog(opts.home, "runner.started", "success", {
+      actor: opts.recipient,
+      context: { ...context, mode, cost_notice_shown: true },
+    });
     runnerResult = await (opts.runnerExecutor ?? runWakeRunner)(
       config,
       event,
@@ -411,20 +515,60 @@ export async function pollAndProcessLocalLive(
     });
     const results: BridgeProcessResult[] = [];
     for (const event of coalesceEvents(raw)) {
+      if (opts.signal?.aborted) break;
       const result = await processEventLocalLive(opts, event);
       results.push(result);
-      if (
-        result.action === "reject" ||
-        result.action === "runner_failed" ||
-        result.action === "verification_failed"
-      ) {
-        break;
-      }
+      if (failedWake(result)) break;
     }
     return results;
   } finally {
     release();
   }
+}
+
+/** Poll sequentially without retaining prior ticks or automatically retrying paid wakes. */
+export async function runBridgeLoop(
+  opts: BridgeOptions,
+  loop: {
+    maxTicks?: number | null;
+    intervalMs?: number;
+    onTick?: (results: BridgeProcessResult[], tick: number) => void;
+  } = {},
+): Promise<{ ticks: number; count: number; failed: boolean }> {
+  const maxTicks = loop.maxTicks === undefined ? 1 : loop.maxTicks;
+  const intervalMs = loop.intervalMs ?? 2000;
+  if (
+    (maxTicks !== null &&
+      (!Number.isInteger(maxTicks) || maxTicks < 1 || maxTicks > 1_000_000)) ||
+    !Number.isInteger(intervalMs) ||
+    intervalMs < 100 ||
+    intervalMs > 86_400_000
+  ) {
+    throw new AgentMailError(
+      "bridge ticks must be 1..1000000 and interval must be 100..86400000 milliseconds",
+      2,
+    );
+  }
+
+  let ticks = 0;
+  let count = 0;
+  while (!opts.signal?.aborted && (maxTicks === null || ticks < maxTicks)) {
+    const results = opts.dryRun
+      ? pollAndProcessLocal(opts)
+      : await pollAndProcessLocalLive(opts);
+    ticks += 1;
+    count += results.length;
+    loop.onTick?.(results, ticks);
+    if (results.some(failedWake)) return { ticks, count, failed: true };
+    if (!opts.signal?.aborted && (maxTicks === null || ticks < maxTicks)) {
+      try {
+        await delay(intervalMs, undefined, { signal: opts.signal });
+      } catch (error) {
+        if (!opts.signal?.aborted) throw error;
+      }
+    }
+  }
+  return { ticks, count, failed: false };
 }
 
 export async function pollHubEvents(

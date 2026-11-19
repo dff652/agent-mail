@@ -16,6 +16,7 @@ import { loadPolicy } from "./policy.js";
 import { loadRoster } from "./roster.js";
 import { getStore, REFERENCE_FILES } from "./services.js";
 import { listSettings, mirrorErrors } from "./settings.js";
+import { runnerExecutableName } from "./wake/runner.js";
 
 export type CheckStatus = "pass" | "warn" | "fail" | "skip";
 
@@ -37,12 +38,13 @@ export interface DoctorReport {
 export interface DoctorOptions {
   deep?: boolean;
   wake?: boolean;
+  runners?: readonly string[];
   hubUrl?: string;
   pathEnv?: string;
   timeoutMs?: number;
 }
 
-const RUNNERS = ["claude", "codex", "grok"] as const;
+const RUNNERS = ["claude", "codex", "grok", "antigravity"] as const;
 
 function check(
   id: string,
@@ -361,13 +363,14 @@ export function checkRunnerBinary(
   runner: string,
   pathEnv = process.env.PATH ?? "",
 ): DoctorCheck {
-  const executable = findExecutable(runner, pathEnv);
+  const bin = runnerExecutableName(runner);
+  const executable = findExecutable(bin, pathEnv);
   if (!executable) {
     return check(
       `runner.${runner}`,
       "warn",
-      `${runner} CLI not found on PATH`,
-      `Install ${runner} only if this project uses its live wake runner`,
+      `${bin} CLI not found on PATH`,
+      `Add ${bin} to PATH if this project uses the ${runner} live wake runner`,
     );
   }
   return check(
@@ -578,7 +581,7 @@ export async function runDoctor(
 ): Promise<DoctorReport> {
   const resolvedHome = path.resolve(home);
   const wake = options.wake ?? false;
-  const deep = (options.deep ?? false) || wake;
+  const deep = (options.deep ?? false) || wake || options.runners !== undefined;
   const checks = checkLocalFiles(resolvedHome);
 
   if (deep && checks.some((item) => item.id === "home" && item.status === "fail")) {
@@ -589,7 +592,7 @@ export async function runDoctor(
     checks.push(checkTokenStore(resolvedHome));
     const connection = checkConnection(resolvedHome);
     checks.push(...connection.checks);
-    for (const runner of RUNNERS) {
+    for (const runner of options.runners ?? RUNNERS) {
       checks.push(checkRunnerBinary(runner, options.pathEnv));
     }
 

@@ -6,6 +6,7 @@ import { AgentMailError } from "./errors.js";
 import { appendRuntimeLog, readRuntimeLogs } from "./observability.js";
 import * as svc from "./services.js";
 import { AGENT_MAIL_VERSION } from "./version.js";
+import type { BridgeOptions } from "./wake/bridge.js";
 
 function usage(exitCode = 2): never {
   console.log(`agent-mail (TypeScript R1/R2)
@@ -13,8 +14,9 @@ function usage(exitCode = 2): never {
 Usage:
   agent-mail version
   agent-mail init [--path DIR]
-  agent-mail quickstart [--path DIR] [--runners codex|claude,grok,…] [--force] [--json]
+  agent-mail quickstart [--path DIR] [--runners codex,antigravity,claude,grok] [--force] [--json]
   agent-mail doctor [--deep] [--wake] [--hub-url URL] [--json] [--path DIR]
+                   [--runners codex,antigravity,claude,grok]
   agent-mail diagnose [--json] [--path DIR]
   agent-mail logs [--limit N] [--outcome success|error] [--operation NAME] [--json] [--path DIR]
   agent-mail tui [--path DIR]
@@ -48,9 +50,11 @@ Usage:
                  [--enable-enrollment] # guarded enrollment requires native HTTPS
                  [--max-connections N] [--tls-handshake-timeout-ms MS]
                  [--headers-timeout-ms MS] [--request-timeout-ms MS]
-  agent-mail bridge --recipient ID --runner codex|grok|claude
+  agent-mail bridge --recipient ID --runner codex|grok|claude|antigravity
                     [--path DIR] [--consumer-id ID] [--dry-run] [--allow-write]
+                    [--tasks-only] [--notify]
                     [--executable PATH] [--timeout SEC]
+                    [--forever | --ticks N] [--interval-ms MS]
   agent-mail pair create --as AGENT_ID [--ttl SEC] [--label L] [--path DIR]
   agent-mail pair redeem --code XXXX-XXXX [--path DIR]
   agent-mail pair list [--path DIR]
@@ -153,9 +157,17 @@ async function main(): Promise<void> {
       const wake = args.includes("--wake");
       const deep = args.includes("--deep") || wake;
       const { formatDoctorChecks, runDoctor } = await import("./doctor.js");
+      let runners: string[] | undefined;
+      if (args.includes("--runners")) {
+        const value = flag(args, "--runners");
+        if (!value) throw new AgentMailError("doctor --runners requires a list", 2);
+        const { parseRunners } = await import("./quickstart.js");
+        runners = parseRunners(value);
+      }
       const report = await runDoctor(doctorHomeFrom(args), {
         deep,
         wake,
+        runners,
         hubUrl: wake
           ? (flag(args, "--hub-url") ?? "http://127.0.0.1:7421")
           : undefined,
@@ -434,22 +446,30 @@ async function main(): Promise<void> {
     }
     if (cmd === "bridge") {
       const home = homeFrom(args) ?? svc.defaultHome();
-      svc.initProject(home);
       const recipient = flag(args, "--recipient");
       const runnerValue = flag(args, "--runner") || "none";
-      if (!["codex", "grok", "claude", "none"].includes(runnerValue)) {
+      const { WAKE_COST_NOTICE, WAKE_RUNNERS } = await import("./wake/runner.js");
+      const runner = runnerValue === "none"
+        ? "none"
+        : WAKE_RUNNERS.find((name) => name === runnerValue);
+      if (!runner) {
         throw new AgentMailError(`unsupported wake runner: ${runnerValue}`, 2);
       }
-      const runner = runnerValue as
-        | "codex"
-        | "grok"
-        | "claude"
-        | "none";
       if (!recipient) usage();
       const consumerId =
         flag(args, "--consumer-id") || `wake:${runner}:${recipient}`;
       const dryRun = args.includes("--dry-run");
       const allowWrite = args.includes("--allow-write");
+      const forever = args.includes("--forever");
+      const bounded = args.includes("--ticks");
+      if (forever && bounded) {
+        throw new AgentMailError("bridge --forever and --ticks are mutually exclusive", 2);
+      }
+      const maxTicks = forever ? null : bounded ? Number(flag(args, "--ticks")) : 1;
+      const intervalMs = args.includes("--interval-ms")
+        ? Number(flag(args, "--interval-ms"))
+        : undefined;
+      const streaming = forever || bounded;
       const timeoutRaw = flag(args, "--timeout");
       const timeoutSeconds = timeoutRaw ? Number(timeoutRaw) : 900;
       if (
@@ -464,53 +484,54 @@ async function main(): Promise<void> {
       }
       if (!dryRun && runner === "none") {
         throw new AgentMailError(
-          "live wake requires --runner codex, grok, or claude",
+          `live wake requires --runner ${WAKE_RUNNERS.join("|")}`,
           2,
         );
       }
+      svc.initProject(home);
+      const { runBridgeLoop } = await import("./wake/bridge.js");
       const controller = new AbortController();
       const cancel = () => controller.abort();
       process.once("SIGINT", cancel);
       process.once("SIGTERM", cancel);
-      const { pollAndProcessLocal, pollAndProcessLocalLive } = await import(
-        "./wake/bridge.js"
-      );
-      const bridgeOptions = {
+      const bridgeOptions: BridgeOptions = {
         home,
         project: path.dirname(home),
-        recipient: recipient!,
+        recipient,
         consumerId,
         runner,
         dryRun,
         allowWrite,
+        tasksOnly: args.includes("--tasks-only"),
+        notify: args.includes("--notify"),
         executable: flag(args, "--executable"),
         timeoutMs: timeoutSeconds * 1000,
         signal: controller.signal,
       };
-      let results;
       try {
-        if (!dryRun) {
-          const { WAKE_COST_NOTICE } = await import("./wake/runner.js");
-          console.error(`NOTICE: ${WAKE_COST_NOTICE}`);
+        if (!dryRun) console.error(`NOTICE: ${WAKE_COST_NOTICE}`);
+        const summary = await runBridgeLoop(bridgeOptions, {
+          maxTicks,
+          intervalMs,
+          onTick(results, tick) {
+            if (streaming) {
+              if (results.length) {
+                console.log(JSON.stringify({ tick, count: results.length, results }));
+              }
+            } else {
+              console.log(JSON.stringify({ count: results.length, results }, null, 2));
+            }
+          },
+        });
+        if (streaming) {
+          console.log(JSON.stringify(summary));
+        } else if (summary.ticks === 0) {
+          console.log(JSON.stringify({ count: 0, results: [] }, null, 2));
         }
-        results = dryRun
-          ? pollAndProcessLocal(bridgeOptions)
-          : await pollAndProcessLocalLive(bridgeOptions);
+        if (summary.failed) process.exitCode = 5;
       } finally {
         process.removeListener("SIGINT", cancel);
         process.removeListener("SIGTERM", cancel);
-      }
-      console.log(JSON.stringify({ count: results.length, results }, null, 2));
-      if (
-        results.some((result) =>
-          [
-            "reject",
-            "runner_failed",
-            "verification_failed",
-          ].includes(result.action),
-        )
-      ) {
-        process.exitCode = 5;
       }
       return;
     }

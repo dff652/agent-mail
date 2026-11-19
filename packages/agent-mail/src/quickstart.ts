@@ -8,21 +8,30 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AgentMailError } from "./errors.js";
+import { DEFAULT_AGENTS, ensureAgent } from "./roster.js";
 import * as svc from "./services.js";
+import { AGENT_MAIL_VERSION } from "./version.js";
+import {
+  ANTIGRAVITY_MCP_CONFIG,
+  ANTIGRAVITY_PLUGIN_DIR,
+  runnerExecutableName,
+} from "./wake/runner.js";
 
 export const DEFAULT_RUNNERS = ["codex"] as const;
-export const ALL_RUNNERS = ["codex", "claude", "grok"] as const;
+export const ALL_RUNNERS = ["codex", "claude", "grok", "antigravity"] as const;
 
 export const RUNNER_AGENT: Record<string, string> = {
   codex: "codex@local",
   claude: "claude-code@local",
   grok: "grok@local",
+  antigravity: "antigravity@local",
 };
 
 const RUNNER_INSTALL_HINT: Record<string, string> = {
   claude: "https://docs.anthropic.com/en/docs/claude-code",
   codex: "https://github.com/openai/codex",
   grok: "Install Grok CLI and ensure `grok` is on PATH",
+  antigravity: "https://antigravity.google/docs/cli",
 };
 
 export type QuickstartResult = {
@@ -79,7 +88,7 @@ export function parseRunners(value: string | string[] | null | undefined): strin
         .filter(Boolean);
   const out: string[] = [];
   for (const p of parts) {
-    if (!(p in RUNNER_AGENT)) {
+    if (!Object.hasOwn(RUNNER_AGENT, p)) {
       throw new AgentMailError(
         `unknown runner ${JSON.stringify(p)}; choose from ${ALL_RUNNERS.join(",")}`,
         2,
@@ -92,12 +101,16 @@ export function parseRunners(value: string | string[] | null | undefined): strin
 
 function writeText(filePath: string, content: string, force: boolean): "wrote" | "skipped" {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  if (fs.existsSync(filePath) && !force) return "skipped";
-  fs.writeFileSync(filePath, content, "utf8");
+  try {
+    fs.writeFileSync(filePath, content, { encoding: "utf8", flag: force ? "w" : "wx" });
+  } catch (error) {
+    if (!force && (error as NodeJS.ErrnoException).code === "EEXIST") return "skipped";
+    throw error;
+  }
   return "wrote";
 }
 
-function claudeMcpJson(
+function stdioMcpJson(
   command: string,
   args: string[],
   home: string,
@@ -167,6 +180,31 @@ function grokToml(
   );
 }
 
+function antigravityPluginFiles(agentId: string): [string, string][] {
+  return [
+    [path.join(ANTIGRAVITY_PLUGIN_DIR, "plugin.json"), JSON.stringify({
+      name: "agent-mail",
+      displayName: "Agent Mail",
+      version: AGENT_MAIL_VERSION,
+      description: "Asynchronous local task handoff with Agent Mail.",
+    }, null, 2) + "\n"],
+    [path.join(ANTIGRAVITY_PLUGIN_DIR, "rules", "AGENTS.md"),
+      `# Agent Mail\n\n` +
+      `Use the Agent Mail MCP tools as ${agentId} and follow the workspace's .agent-mail/PROTOCOL.md.\n` +
+      "For a wake notification, verify the recipient and re-read the exact message from the inbox.\n" +
+      "On done or error, only acknowledge the delivery and report a summary. Never send a new task automatically in response.\n" +
+      "For a task, respect its effect and approval. Reply with done or error before acknowledging it.\n"],
+    [path.join(ANTIGRAVITY_PLUGIN_DIR, "skills", "agent-mail", "SKILL.md"),
+      "---\nname: agent-mail\ndescription: Claim, handle, and acknowledge asynchronous Agent Mail deliveries.\n---\n\n" +
+      "# Agent Mail\n\n" +
+      "Use comm_inbox to read the message and verify its recipient. Claim tasks with comm_claim.\n" +
+      "While approval is pending, leave the claimed task waiting. On rejection, send error and acknowledge it.\n" +
+      "Send done or error for a handled task with its task ID, thread ID, and original message ID, then use comm_ack.\n" +
+      "For incoming done and error messages, acknowledge and summarize only.\n"],
+    [path.join(ANTIGRAVITY_PLUGIN_DIR, "hooks.json"), "{}\n"],
+  ];
+}
+
 export type RunQuickstartOptions = {
   runners?: string[] | null;
   force?: boolean;
@@ -182,7 +220,7 @@ export function runQuickstart(
   const home = path.join(project, ".agent-mail");
   svc.initProject(home);
 
-  const selected = options.runners ?? [...DEFAULT_RUNNERS];
+  const selected = options.runners?.length === 0 ? [] : parseRunners(options.runners);
   const force = options.force === true;
   const mcp = resolveMcpInvocation();
 
@@ -201,33 +239,41 @@ export function runQuickstart(
 
   for (const runner of selected) {
     const agentId = RUNNER_AGENT[runner]!;
-    const binName = runner === "claude" ? "claude" : runner;
+    const binName = runnerExecutableName(runner);
     const found = which(binName);
     result.runners_found[runner] = found;
     if (!found) {
       result.notes.push(
-        `${runner}: CLI not on PATH — install: ${RUNNER_INSTALL_HINT[runner]}`,
+        `${runner}: ${binName} not on PATH — install: ${RUNNER_INSTALL_HINT[runner]}`,
       );
     }
 
     let rel: string;
     let content: string;
+    let pluginFiles: [string, string][] = [];
     if (runner === "claude") {
       rel = ".mcp.json";
-      content = claudeMcpJson(mcp.command, mcp.args, home, agentId);
+      content = stdioMcpJson(mcp.command, mcp.args, home, agentId);
     } else if (runner === "codex") {
       rel = path.join(".codex", "config.toml");
       content = codexToml(mcp.command, mcp.args, project, home, agentId);
+    } else if (runner === "antigravity") {
+      // Existing homes preserve their roster when initProject runs.
+      ensureAgent(home, DEFAULT_AGENTS.find((agent) => agent.id === agentId)!);
+      rel = ANTIGRAVITY_MCP_CONFIG;
+      content = stdioMcpJson(mcp.command, mcp.args, home, agentId);
+      pluginFiles = antigravityPluginFiles(agentId);
     } else {
       rel = path.join(".grok", "config.toml");
       content = grokToml(mcp.command, mcp.args, home, agentId);
     }
 
-    const abs = path.join(project, rel);
-    const status = writeText(abs, content, force);
     result.configs.push(rel);
-    if (status === "wrote") result.wrote.push(rel);
-    else result.skipped.push(`${rel} (exists; use --force to overwrite)`);
+    for (const [file, text] of [...pluginFiles, [rel, content]]) {
+      const status = writeText(path.join(project, file), text, force);
+      if (status === "wrote") result.wrote.push(file);
+      else result.skipped.push(`${file} (exists; use --force to overwrite)`);
+    }
   }
 
   result.notes.push(
@@ -238,7 +284,7 @@ export function runQuickstart(
   );
   if (selected.length === 1) {
     result.notes.push(
-      "Single-agent default: add more with --runners codex,claude,grok",
+      "Single-agent default: add more with --runners codex,antigravity,claude,grok",
     );
   }
 
