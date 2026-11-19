@@ -707,6 +707,99 @@ describe("bridge loop", () => {
 });
 
 describe("wake live lifecycle with deterministic runner", () => {
+  it.each([true, false])("settles a hung Antigravity child after a durable reply (runner ack=%s)", async (runnerAck) => {
+    const home = tmpHome();
+    const project = path.dirname(home);
+    const recipient = "antigravity@local";
+    const consumerId = "wake:hung-agy";
+    const ready = path.join(project, "child-ready");
+    const task = svc.send({
+      from_id: "codex@local", to: recipient, type: "task",
+      effect: "read", body: "single execution fixture", home,
+    });
+    const runnerExecutor = vi.fn<WakeRunnerExecutor>(async (config, event, _item, mode) => {
+      expect(mode).toBe("read");
+      svc.claim(event.message_id, recipient, { home });
+      return runChildProcess({
+        command: [
+          process.execPath, "-e",
+          "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], 'ready'); setInterval(() => {}, 1000);",
+          ready,
+        ],
+        stdin: null,
+      }, config);
+    });
+    const abort = new AbortController();
+    const opts = {
+      home, recipient, consumerId, runner: "antigravity" as const,
+      runnerExecutor, timeoutMs: 4_000, terminateGraceMs: 30, signal: abort.signal,
+    };
+    const store = svc.getStore(home);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "performance"] });
+    let pending: ReturnType<typeof pollAndProcessLocalLive> | undefined;
+    try {
+      pending = pollAndProcessLocalLive(opts);
+      await vi.waitFor(() => expect(fs.existsSync(ready)).toBe(true));
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(store.hasWakeCompletion(task.id, recipient)).toBe(false);
+      expect(store.getOutboxCursor(consumerId, recipient)).toBe(0);
+
+      const reply = svc.send({
+        from_id: recipient, to: task.from_id, type: "done", body: "one receipt", home,
+        task_id: task.task_id, thread_id: task.thread_id, in_reply_to: task.id,
+      });
+      if (runnerAck) svc.ack(task.id, recipient, { home });
+      expect(store.hasWakeCompletion(task.id, recipient)).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(11_000);
+      const results = await pending;
+      expect(results).toMatchObject([{
+        action: "acked", business_state: "complete", stopped_after_completion: true,
+        timed_out: false, cancelled: false, failure_class: null,
+      }]);
+      expect(store.getOutboxCursor(consumerId, recipient)).toBe(results[0].sequence);
+      expect(svc.inbox(recipient, { home })).toEqual([]);
+      expect(await pollAndProcessLocalLive(opts)).toEqual([]);
+      expect(await pollAndProcessLocalLive({ ...opts, consumerId: "wake:hung-agy:replay" }))
+        .toMatchObject([{ action: "ack_only", business_state: "complete" }]);
+      expect(runnerExecutor).toHaveBeenCalledTimes(1);
+      expect(svc.tail({ home }).map(({ id }) => id).sort()).toEqual([task.id, reply.id].sort());
+      expect(readRuntimeLogs(home, { limit: 20 }).map(({ operation }) => operation))
+        .toContain("runner.stopped_after_completion");
+    } finally {
+      abort.abort();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["done", "error"] as const)("recovers an existing %s after restart and lease expiration without launching agy", async (type) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const home = tmpHome();
+      const recipient = "antigravity@local";
+      const consumerId = "wake:agy-restart";
+      svc.configSet("project.lease_seconds", "1", { home });
+      const reply = sendReceipt(home, type);
+      const [{ message, delivery }] = svc.inbox(recipient, { home });
+      vi.setSystemTime(delivery.claim_until!.getTime() + 1);
+      const runnerExecutor = vi.fn<WakeRunnerExecutor>(async () => runnerOk());
+      const opts = { home, recipient, consumerId, runner: "antigravity" as const, runnerExecutor };
+
+      const results = await pollAndProcessLocalLive(opts);
+      expect(results).toMatchObject([{
+        action: "ack_only", message_id: message.id, business_state: "complete",
+      }]);
+      expect(await pollAndProcessLocalLive(opts)).toEqual([]);
+      expect(runnerExecutor).not.toHaveBeenCalled();
+      expect(svc.getStore(home).getOutboxCursor(consumerId, recipient)).toBe(results[0].sequence);
+      expect(svc.inbox(recipient, { home })).toEqual([]);
+      expect(svc.tail({ home }).map(({ id }) => id).sort()).toEqual([message.id, reply.id].sort());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["done", "error"] as const)("retries a preclaimed %s receipt without renewing its active lease", async (type) => {
     const home = tmpHome();
     const recipient = "codex@local";

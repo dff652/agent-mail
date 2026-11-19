@@ -59,6 +59,8 @@ Both templates start in read mode. Automatic workspace edits require both an app
 
 After resolving a wake error, use `kickstart` to restart a loaded service that exited. `kickstart` defaults to both runners, and `start` loads missing services. Both leave running bridges in place. `stop` unloads both services.
 
+For Antigravity wakes, the bridge gives the child ten seconds to exit after observing a durable delivery acknowledgement or terminal task receipt. If the child remains active, the bridge stops it, verifies the record, and advances the cursor. A restart can finish the delivery acknowledgement for an existing terminal receipt without a second wake.
+
 ```bash
 examples/launchd/bridge-ctl.sh --path "$project" kickstart codex
 examples/launchd/bridge-ctl.sh --path "$project" kickstart all

@@ -792,6 +792,25 @@ export class SqliteStore {
     }
   }
 
+  hasWakeCompletion(messageId: string, recipient: string): boolean {
+    const db = this.connect();
+    try {
+      // A completed/failed task and its terminal receipt commit together.
+      return db.prepare(`
+        SELECT 1 FROM deliveries d
+        JOIN messages m ON m.id = d.message_id
+        LEFT JOIN tasks t ON t.id = m.task_id AND t.origin_message_id = m.id
+        WHERE d.message_id = ? AND d.recipient = ?
+          AND (d.status = 'acked' OR (
+            d.status = 'claimed' AND d.claim_by = d.recipient
+            AND t.status IN ('completed', 'failed')
+          ))
+      `).get(messageId, recipient) !== undefined;
+    } finally {
+      db.close();
+    }
+  }
+
   listEvents(opts: {
     limit?: number;
     kind?: string | null;
