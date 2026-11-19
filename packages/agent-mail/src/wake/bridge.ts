@@ -2,6 +2,7 @@
  * Local wake bridge: body-free outbox → constrained runner → business-state
  * verification → cursor acknowledgement.
  */
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -50,6 +51,9 @@ export interface BridgeOptions {
   signal?: AbortSignal;
   allowWrite?: boolean;
   dryRun?: boolean;
+  tasksOnly?: boolean;
+  notify?: boolean;
+  notifier?: (notice: BridgeNotice) => void;
   /** Deterministic local fixture hook; production defaults to runWakeRunner. */
   runnerExecutor?: WakeRunnerExecutor;
   /** When set, poll remote hub events; else local store. */
@@ -82,10 +86,66 @@ export interface BridgeProcessResult {
   failure_class?: RunnerResult["failure_class"];
 }
 
+export interface BridgeNotice {
+  recipient: string;
+  message_id: string;
+  task_id: string | null;
+  action: BridgeProcessResult["action"];
+  business_state: string;
+  failure_class: RunnerResult["failure_class"];
+}
+
 function failedWake(result: BridgeProcessResult): boolean {
   return result.action === "reject" ||
     result.action === "runner_failed" ||
     result.action === "verification_failed";
+}
+
+function notifyMacOS(notice: BridgeNotice): void {
+  if (process.platform !== "darwin") return;
+  const message = [
+    notice.recipient,
+    notice.message_id,
+    notice.task_id,
+    notice.action,
+    notice.business_state,
+    notice.failure_class,
+  ].filter(Boolean).join(" · ");
+  spawnSync("osascript", [
+    "-e",
+    "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run",
+    "Agent Mail",
+    message,
+  ], { stdio: "ignore", timeout: 2_000 });
+}
+
+function notifyWake(
+  opts: BridgeOptions,
+  item: WakeInboxSnapshot,
+  result: BridgeProcessResult,
+): void {
+  if (!opts.notify || opts.dryRun || (
+    result.business_state !== "waiting_approval" &&
+    result.action !== "acked" &&
+    !failedWake(result)
+  )) return;
+
+  try {
+    (opts.notifier ?? notifyMacOS)({
+      recipient: opts.recipient,
+      message_id: result.message_id,
+      task_id: item.message.task_id,
+      action: result.action,
+      business_state: result.business_state,
+      failure_class: result.failure_class ?? null,
+    });
+  } catch {
+    // Notifications are best effort.
+  }
+}
+
+function isReceipt(item: WakeInboxSnapshot): boolean {
+  return item.message.type === "done" || item.message.type === "error";
 }
 
 function snapshotFor(
@@ -168,13 +228,15 @@ function initialResult(
     allowWrite: Boolean(opts.allowWrite),
     recipient: opts.recipient,
   });
+  const deferReceipt = opts.tasksOnly && isReceipt(item) &&
+    event.recipient === opts.recipient && event.kind === "message.created";
   return {
     sequence: event.sequence,
     message_id: event.message_id,
-    action: plan.action,
-    mode: plan.mode,
+    action: deferReceipt ? "ack_only" : plan.action,
+    mode: deferReceipt ? null : plan.mode,
     business_state: plan.business_state,
-    reason: plan.reason,
+    reason: deferReceipt ? "receipt left in inbox for the interactive session" : plan.reason,
   };
 }
 
@@ -192,18 +254,18 @@ export function processEventLocal(
     if (opts.runner === "none") {
       result.action = "reject";
       result.reason = RUNNER_REQUIRED;
-      return result;
-    }
-    const invocation = buildRunnerInvocation(
-      runnerConfig(opts),
-      event,
-      item,
-      result.mode === "write" ? "write" : "read",
-    );
-    result.command = invocation.command;
-    if (!opts.dryRun) {
-      result.action = "reject";
-      result.reason = "live wake requires the asynchronous bridge path";
+    } else {
+      const invocation = buildRunnerInvocation(
+        runnerConfig(opts),
+        event,
+        item,
+        result.mode === "write" ? "write" : "read",
+      );
+      result.command = invocation.command;
+      if (!opts.dryRun) {
+        result.action = "reject";
+        result.reason = "live wake requires the asynchronous bridge path";
+      }
     }
   }
   if (result.action === "ack_only" && !opts.dryRun) {
@@ -211,6 +273,7 @@ export function processEventLocal(
       home: opts.home,
     });
   }
+  notifyWake(opts, item, result);
   return result;
 }
 
@@ -234,7 +297,18 @@ export async function processEventLocalLive(
   if (opts.dryRun) return processEventLocal(opts, event);
 
   const item = snapshotFor(opts.home, opts.recipient, event.message_id);
+  const result = await processLiveSnapshot(opts, event, item);
+  notifyWake(opts, item, result);
+  return result;
+}
+
+async function processLiveSnapshot(
+  opts: BridgeOptions,
+  event: OutboxEventRow,
+  item: WakeInboxSnapshot,
+): Promise<BridgeProcessResult> {
   const result = initialResult(opts, event, item);
+  const receipt = isReceipt(item);
   const context = {
     consumer_id: opts.consumerId,
     event_id: event.id,
@@ -259,7 +333,8 @@ export async function processEventLocalLive(
     svc.ackOutbox(opts.consumerId, opts.recipient, event.sequence, {
       home: opts.home,
     });
-    appendRuntimeLog(opts.home, "wake.deduplicated", "success", {
+    const operation = opts.tasksOnly && receipt ? "wake.receipt_deferred" : "wake.deduplicated";
+    appendRuntimeLog(opts.home, operation, "success", {
       actor: opts.recipient,
       context: {
         ...context,
@@ -302,8 +377,21 @@ export async function processEventLocalLive(
     // The mailbox requires a claim before ack. Prepare receipts here so the
     // model can just acknowledge and summarize them.
     if (opts.signal?.aborted) return result;
-    if (item.message.type === "done" || item.message.type === "error") {
-      item.delivery = svc.claim(event.message_id, opts.recipient, { home: opts.home });
+    if (receipt) {
+      const { status, claim_by, claim_until } = item.delivery;
+      const expired = status === "claimed" && claim_until !== null &&
+        claim_until.getTime() <= Date.now();
+      if (status === "pending" || expired) {
+        item.delivery = svc.claim(event.message_id, opts.recipient, { home: opts.home });
+      } else if (claim_by !== opts.recipient) {
+        result.action = "reject";
+        result.reason = "receipt already has another active claim";
+        appendRuntimeLog(opts.home, "wake.rejected", "error", {
+          actor: opts.recipient,
+          context: { ...context, reason: result.reason },
+        });
+        return result;
+      }
     }
     appendRuntimeLog(opts.home, "runner.started", "success", {
       actor: opts.recipient,

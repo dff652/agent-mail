@@ -30,8 +30,20 @@ const CONTROL_CHARACTER = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f]", "g");
 const ANSI_COLOR = new RegExp("\\u001b\\[[0-9;]*m", "g");
 
 type SettingItem = ReturnType<typeof svc.configList>[number];
-type TuiPage = "overview" | "settings";
+type TuiPage = "overview" | "settings" | "approvals";
 type InputMode = "normal" | "edit" | "confirm";
+type Confirmation =
+  | { kind: "setting"; key: string; rawValue: string }
+  | { kind: "approval"; id: string };
+
+interface ApprovalItem {
+  id: string;
+  task_id: unknown;
+  message_id: unknown;
+  requested_for: unknown;
+  status: unknown;
+  decided_by: unknown;
+}
 
 export interface TuiInput {
   isTTY?: boolean;
@@ -212,9 +224,11 @@ export class TuiModel {
   overview: OverviewSnapshot;
   settings: SettingItem[] = [];
   selectedIndex = 0;
+  approvals: ApprovalItem[] = [];
+  selectedApprovalIndex = 0;
   inputMode: InputMode = "normal";
   inputBuffer = "";
-  pendingValue: { key: string; rawValue: string } | null = null;
+  private confirmation: Confirmation | null = null;
   status = "Ready";
   helpVisible = false;
 
@@ -228,9 +242,82 @@ export class TuiModel {
   }
 
   refresh(): void {
-    this.overview = buildOverviewSnapshot(this.home, this.source.diagnose);
-    if (this.refreshSettings()) {
+    let refreshed: boolean;
+    if (this.page === "approvals") {
+      refreshed = this.refreshApprovals();
+    } else {
+      this.overview = buildOverviewSnapshot(this.home, this.source.diagnose);
+      refreshed = this.refreshSettings();
+    }
+    if (refreshed && this.inputMode === "normal") {
       this.status = `Refreshed ${new Date().toISOString().slice(11, 19)} UTC`;
+    }
+  }
+
+  private refreshApprovals(): boolean {
+    const selectedId = this.approvals[this.selectedApprovalIndex]?.id;
+    try {
+      this.approvals = svc.listApprovals({ home: this.home, status: null }).flatMap(
+        ({ id, task_id, message_id, requested_for, status, decided_by }) =>
+          typeof id === "string" && id.length > 0
+            ? [{ id, task_id, message_id, requested_for, status, decided_by }]
+            : [],
+      );
+      const index = this.approvals.findIndex(({ id }) => id === selectedId);
+      this.selectedApprovalIndex = index >= 0 ? index : Math.min(
+        this.selectedApprovalIndex, Math.max(this.approvals.length - 1, 0),
+      );
+      return true;
+    } catch {
+      this.approvals = [];
+      this.selectedApprovalIndex = 0;
+      this.status = "Approvals unavailable";
+      return false;
+    }
+  }
+
+  get approvalConfirmationId(): string | null {
+    return this.confirmation?.kind === "approval" ? this.confirmation.id : null;
+  }
+
+  private clearPrompt(): void {
+    this.inputMode = "normal";
+    this.inputBuffer = "";
+    this.confirmation = null;
+  }
+
+  private decideApproval(id: string, decision: "approved" | "rejected"): void {
+    this.clearPrompt();
+    try {
+      const decide = decision === "approved" ? svc.approve : svc.reject;
+      decide(id, "human@local", { home: this.home });
+    } catch {
+      this.refreshApprovals();
+      this.status = "Approval decision failed. Check the current status.";
+      return;
+    }
+    if (this.refreshApprovals()) this.status = `Approval ${decision}`;
+  }
+
+  private handleApprovalKey(key: string): void {
+    if (key === "up" || key === "k") {
+      this.selectedApprovalIndex = Math.max(this.selectedApprovalIndex - 1, 0);
+    } else if (key === "down" || key === "j") {
+      this.selectedApprovalIndex = Math.min(
+        this.selectedApprovalIndex + 1, Math.max(this.approvals.length - 1, 0),
+      );
+    } else if (key === "a" || key === "x") {
+      const item = this.approvals[this.selectedApprovalIndex];
+      if (item?.status !== "pending") {
+        this.status = "Select a pending approval";
+      } else if (key === "x") {
+        this.decideApproval(item.id, "rejected");
+      } else {
+        this.confirmation = { kind: "approval", id: item.id };
+        this.inputMode = "confirm";
+        this.inputBuffer = "";
+        this.status = "Approve the selected request";
+      }
     }
   }
 
@@ -268,7 +355,7 @@ export class TuiModel {
 
   private queueValue(item: SettingItem, rawValue: string): void {
     if (item.danger === "high") {
-      this.pendingValue = { key: item.key, rawValue };
+      this.confirmation = { kind: "setting", key: item.key, rawValue };
       this.inputMode = "confirm";
       this.inputBuffer = "";
       this.status = `High-risk change: type ${item.key} to confirm`;
@@ -288,9 +375,7 @@ export class TuiModel {
     this.status = `Updated ${key}=${compactJson(updated.value)}${
       warnings.length > 0 ? `; warning: ${warnings.join("; ")}` : ""
     }`;
-    this.inputMode = "normal";
-    this.inputBuffer = "";
-    this.pendingValue = null;
+    this.clearPrompt();
   }
 
   private beginEdit(): void {
@@ -326,9 +411,7 @@ export class TuiModel {
 
   private handlePromptKey(key: string): boolean {
     if (key === "escape") {
-      this.inputMode = "normal";
-      this.inputBuffer = "";
-      this.pendingValue = null;
+      this.clearPrompt();
       this.status = "Change cancelled";
       return false;
     }
@@ -348,19 +431,20 @@ export class TuiModel {
         this.queueValue(item, this.inputBuffer);
         return false;
       }
-      const pending = this.pendingValue;
+      const pending = this.confirmation;
       if (!pending) {
-        this.inputMode = "normal";
+        this.clearPrompt();
         return false;
       }
-      if (this.inputBuffer !== pending.key) {
-        this.status = "Confirmation did not match; no change written";
-        this.inputMode = "normal";
-        this.inputBuffer = "";
-        this.pendingValue = null;
-        return false;
+      const expected = pending.kind === "approval" ? pending.id : pending.key;
+      if (this.inputBuffer !== expected) {
+        this.status = "Confirmation did not match. No change written.";
+        this.clearPrompt();
+      } else if (pending.kind === "approval") {
+        this.decideApproval(pending.id, "approved");
+      } else {
+        this.applyValue(pending.key, pending.rawValue);
       }
-      this.applyValue(pending.key, pending.rawValue);
       return false;
     }
     if (
@@ -376,8 +460,9 @@ export class TuiModel {
 
   handleKey(key: string): boolean {
     try {
+      if (key === "ctrl-c") return true;
       if (this.inputMode !== "normal") return this.handlePromptKey(key);
-      if (key === "q" || key === "ctrl-c") return true;
+      if (key === "q") return true;
       if (key === "escape") {
         if (this.helpVisible) this.helpVisible = false;
         else return true;
@@ -387,16 +472,17 @@ export class TuiModel {
         this.helpVisible = !this.helpVisible;
         return false;
       }
-      if (key === "1") {
-        this.page = "overview";
-        return false;
-      }
-      if (key === "2") {
-        this.page = "settings";
+      if (key === "1" || key === "2" || key === "3") {
+        this.page = key === "1" ? "overview" : key === "2" ? "settings" : "approvals";
+        this.refresh();
         return false;
       }
       if (key === "r") {
         this.refresh();
+        return false;
+      }
+      if (this.page === "approvals") {
+        this.handleApprovalKey(key);
         return false;
       }
       if (this.page !== "settings") return false;
@@ -418,9 +504,7 @@ export class TuiModel {
       }
       return false;
     } catch (error) {
-      this.inputMode = "normal";
-      this.inputBuffer = "";
-      this.pendingValue = null;
+      this.clearPrompt();
       this.status = `Error: ${
         error instanceof Error ? error.message : String(error)
       }`;
@@ -430,17 +514,15 @@ export class TuiModel {
 }
 
 function renderHeader(model: TuiModel, width: number): string[] {
-  const overview =
-    model.page === "overview"
-      ? `${INVERSE}${BOLD}[1] Overview${RESET}`
-      : `${CYAN}[1] Overview${RESET}`;
-  const settings =
-    model.page === "settings"
-      ? `${INVERSE}${BOLD}[2] Settings${RESET}`
-      : `${CYAN}[2] Settings${RESET}`;
+  const tab = (page: TuiPage, label: string) =>
+    `${model.page === page ? INVERSE + BOLD : CYAN}${label}${RESET}`;
   return [
     `${BOLD}Agent Mail Operations Console${RESET}`,
-    `${overview}  ${settings}`,
+    [
+      tab("overview", "[1] Overview"),
+      tab("settings", "[2] Settings"),
+      tab("approvals", "[3] Approvals"),
+    ].join(" "),
     `${DIM}${truncate(model.home, width)}${RESET}`,
     "",
   ];
@@ -526,6 +608,31 @@ function renderSettings(model: TuiModel, width: number): string[] {
   return lines;
 }
 
+function renderApprovals(model: TuiModel, width: number, rows: number): string[] {
+  const lines = [`${BOLD}Approvals${RESET}`];
+  const selected = model.approvals[model.selectedApprovalIndex];
+  if (!selected) return [...lines, "No approvals to display"];
+
+  const details = [
+    ["ID", selected.id],
+    ["Task", selected.task_id],
+    ["Message", selected.message_id],
+    ["For", selected.requested_for],
+    ["Decided by", selected.decided_by],
+  ] as const;
+  const pageSize = Math.max(1, rows - details.length - lines.length);
+  const first = Math.max(0, model.selectedApprovalIndex - pageSize + 1);
+  for (const item of model.approvals.slice(first, first + pageSize)) {
+    const active = item === selected;
+    const row = `${active ? ">" : " "} ${truncate(item.status ?? "-", 10).padEnd(10)} ${truncate(item.id, width - 13)}`;
+    lines.push(active ? `${INVERSE}${row}${RESET}` : row);
+  }
+  for (const [label, value] of details.slice(0, rows - lines.length)) {
+    lines.push(`${label} ${truncate(value ?? "-", width - label.length - 1)}`);
+  }
+  return lines;
+}
+
 function renderFooter(model: TuiModel, width: number): string[] {
   const lines = ["", `${DIM}${truncate(model.status, width)}${RESET}`];
   if (model.inputMode === "edit") {
@@ -534,13 +641,27 @@ function renderFooter(model: TuiModel, width: number): string[] {
       `${DIM}Enter apply · Esc cancel${RESET}`,
     );
   } else if (model.inputMode === "confirm") {
+    const id = model.approvalConfirmationId;
+    if (id !== null) {
+      lines.push(
+        `${RED}${truncate(id, width)}${RESET}`,
+        `${RED}approval ID>${RESET} ${truncate(model.inputBuffer, width - 14)}${BOLD}_${RESET}`,
+        `${DIM}Type the full ID · Enter confirm · Esc cancel${RESET}`,
+      );
+    } else {
+      lines.push(
+        `${RED}confirm key>${RESET} ${truncate(model.inputBuffer, width - 14)}${BOLD}_${RESET}`,
+        `${DIM}Type the full setting key · Enter confirm · Esc cancel${RESET}`,
+      );
+    }
+  } else if (model.page === "approvals") {
     lines.push(
-      `${RED}confirm key>${RESET} ${truncate(model.inputBuffer, width - 14)}${BOLD}_${RESET}`,
-      `${DIM}Type the full setting key · Enter confirm · Esc cancel${RESET}`,
+      `${DIM}↑/↓ or j/k · a approve · x reject${RESET}`,
+      `${DIM}1/2/3 page · r refresh · ? help · q quit${RESET}`,
     );
   } else {
     lines.push(
-      `${DIM}1/2 page · ↑/↓ or j/k · Enter edit/cycle · d default · r refresh · ? help · q quit${RESET}`,
+      `${DIM}1/2/3 page · ↑/↓ or j/k · Enter edit/cycle · d default · r refresh · ? help · q quit${RESET}`,
     );
   }
   if (model.helpVisible) {
@@ -550,6 +671,7 @@ function renderFooter(model: TuiModel, width: number): string[] {
       "• Settings writes call the same locked config service as the CLI.",
       "• Overview reads diagnose() only; it never consumes or acknowledges outbox events.",
       "• High-risk values require typing the full setting key.",
+      "• Approvals show only request metadata. Approval requires the full ID.",
       "• Inbox/chat/send/claim/ack and agent execution are intentionally absent.",
     );
   }
@@ -562,12 +684,21 @@ export function renderTui(
 ): string {
   const width = Math.max(options.columns ?? 80, 40);
   const height = Math.max(options.rows ?? 24, 12);
-  const content = [
-    ...renderHeader(model, width),
-    ...(model.page === "overview"
+  const header = renderHeader(model, width);
+  const footer = renderFooter(model, width);
+  if (model.page === "approvals") {
+    // Keep the selected row and confirmation controls visible on short screens.
+    footer.splice(height - header.length - 2);
+  }
+  const body = model.page === "approvals"
+    ? renderApprovals(model, width, height - header.length - footer.length)
+    : model.page === "overview"
       ? renderOverview(model, width)
-      : renderSettings(model, width)),
-    ...renderFooter(model, width),
+      : renderSettings(model, width);
+  const content = [
+    ...header,
+    ...body,
+    ...footer,
   ];
   const visible = content
     .slice(0, height)

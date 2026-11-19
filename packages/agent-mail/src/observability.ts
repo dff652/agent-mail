@@ -7,7 +7,7 @@ export const DEFAULT_LOG_BACKUPS = 3;
 
 const SENSITIVE_KEY = /(body|note|token|secret|password|api[_-]?key|authorization|cookie|private[_-]?key)/i;
 const BEARER = /\bbearer\s+[A-Za-z0-9._~+/=-]+/gi;
-const CREDENTIAL = /\b(token|secret|password|api[_-]?key|authorization)\b(\s*[:=]\s*)([^\s,;]+)/gi;
+const CREDENTIAL = /\b(token|secret|password|api[_-]?key|authorization|cookie)\b(\s*[:=]\s*)([^\s,;]+)/gi;
 const PRIVATE_KEY = /-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC )?PRIVATE KEY-----/gi;
 
 export interface RuntimeLogOptions {

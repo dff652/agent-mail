@@ -52,6 +52,7 @@ Usage:
                  [--headers-timeout-ms MS] [--request-timeout-ms MS]
   agent-mail bridge --recipient ID --runner codex|grok|claude|antigravity
                     [--path DIR] [--consumer-id ID] [--dry-run] [--allow-write]
+                    [--tasks-only] [--notify]
                     [--executable PATH] [--timeout SEC]
                     [--forever | --ticks N] [--interval-ms MS]
   agent-mail pair create --as AGENT_ID [--ttl SEC] [--label L] [--path DIR]
@@ -501,6 +502,8 @@ async function main(): Promise<void> {
         runner,
         dryRun,
         allowWrite,
+        tasksOnly: args.includes("--tasks-only"),
+        notify: args.includes("--notify"),
         executable: flag(args, "--executable"),
         timeoutMs: timeoutSeconds * 1000,
         signal: controller.signal,

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { coalesceEvents, executionMode } from "../src/domain/wake-gate.js";
 import { mintToken } from "../src/hub/auth.js";
@@ -12,6 +12,7 @@ import {
   pollAndProcessLocal,
   pollAndProcessLocalLive,
   runBridgeLoop,
+  type BridgeNotice,
 } from "../src/wake/bridge.js";
 import {
   ANTIGRAVITY_MCP_CONFIG,
@@ -39,6 +40,19 @@ function runnerOk(): RunnerResult {
     cancelled: false,
     failure_class: null,
   };
+}
+
+function sendReceipt(home: string, type: "done" | "error"): Message {
+  const task = svc.send({
+    from_id: "codex@local", to: "antigravity@local", type: "task",
+    effect: "read", body: "receipt fixture task", home,
+  });
+  svc.claim(task.id, "antigravity@local", { home });
+  return svc.send({
+    from_id: "antigravity@local", to: "codex@local", type,
+    body: "private receipt body", home,
+    task_id: task.task_id, thread_id: task.thread_id,
+  });
 }
 
 function runnerSnapshot(body = "private body") {
@@ -693,6 +707,82 @@ describe("bridge loop", () => {
 });
 
 describe("wake live lifecycle with deterministic runner", () => {
+  it.each(["done", "error"] as const)("retries a preclaimed %s receipt without renewing its active lease", async (type) => {
+    const home = tmpHome();
+    const recipient = "codex@local";
+    const consumerId = "wake:receipt-retry";
+    const receipt = sendReceipt(home, type);
+    const opts = { home, recipient, consumerId, runner: "codex" as const };
+    const getClaims = () => svc.listEvents({ home, kind: "delivery.claimed", actor: recipient })
+      .filter((event) => event.message_id === receipt.id);
+
+    const failed = await pollAndProcessLocalLive({
+      ...opts,
+      runnerExecutor: async () => ({ ...runnerOk(), exit_code: 9, failure_class: "runner_exit" }),
+    });
+    expect(failed[0].action).toBe("runner_failed");
+    expect(svc.getStore(home).getOutboxCursor(consumerId, recipient)).toBe(0);
+    expect(getClaims()).toHaveLength(1);
+    const firstLease = svc.inbox(recipient, { home })[0].delivery.claim_until;
+
+    const retried = await pollAndProcessLocalLive({
+      ...opts,
+      runnerExecutor: async (_config, event, item) => {
+        expect(item.delivery).toMatchObject({ status: "claimed", claim_by: recipient, claim_until: firstLease });
+        svc.ack(event.message_id, recipient, { home });
+        return runnerOk();
+      },
+    });
+    expect(retried).toMatchObject([{ action: "acked", business_state: "complete" }]);
+    expect(getClaims()).toHaveLength(1);
+    expect(svc.getStore(home).getOutboxCursor(consumerId, recipient)).toBe(retried[0].sequence);
+  });
+
+  it("renews an expired receipt claim before a retry", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const home = tmpHome();
+      const recipient = "codex@local";
+      const receipt = sendReceipt(home, "done");
+      svc.configSet("project.lease_seconds", "1", { home });
+      const old = svc.claim(receipt.id, recipient, { home });
+      vi.setSystemTime(old.claim_until!.getTime() + 1);
+      const results = await pollAndProcessLocalLive({
+        home, recipient, consumerId: "wake:expired-receipt", runner: "codex",
+        runnerExecutor: async (_config, event, item) => {
+          expect(item.delivery.claim_until!.getTime()).toBeGreaterThan(Date.now());
+          svc.ack(event.message_id, recipient, { home });
+          return runnerOk();
+        },
+      });
+      expect(results[0].action).toBe("acked");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([true, false])("defers pending receipts in tasks-only mode (dryRun=%s)", async (dryRun) => {
+    const home = tmpHome();
+    const recipient = "codex@local";
+    const consumerId = "wake:tasks-only";
+    const receipts = [sendReceipt(home, "done"), sendReceipt(home, "error")];
+    const runnerExecutor = vi.fn(async () => runnerOk());
+    const notifier = vi.fn();
+    const opts = {
+      home, recipient, consumerId, runner: "codex" as const,
+      tasksOnly: true, dryRun, runnerExecutor, notify: true, notifier,
+    };
+    const results = dryRun ? pollAndProcessLocal(opts) : await pollAndProcessLocalLive(opts);
+    expect(results).toMatchObject(receipts.map(({ id }) => ({
+      message_id: id, action: "ack_only", mode: null, business_state: "incomplete",
+    })));
+    expect(runnerExecutor).not.toHaveBeenCalled();
+    expect(notifier).not.toHaveBeenCalled();
+    expect(svc.listEvents({ home, kind: "delivery.claimed", actor: recipient })).toHaveLength(0);
+    expect(svc.inbox(recipient, { home }).map(({ delivery }) => delivery.status)).toEqual(["pending", "pending"]);
+    expect(svc.getStore(home).getOutboxCursor(consumerId, recipient)).toBe(dryRun ? 0 : results[1].sequence);
+  });
+
   it("claims pending approval, wakes again after approval, then closes and deduplicates", async () => {
     const home = tmpHome();
     const task = svc.send({
@@ -899,4 +989,96 @@ describe("wake live lifecycle with deterministic runner", () => {
     const results = await first;
     expect(results[0].action).toBe("acked");
   });
+});
+
+describe("bridge notifications", () => {
+  it("notifies on the deduplicated approval wait without waking a runner", async () => {
+    const home = tmpHome();
+    const recipient = "codex@local";
+    const task = svc.send({
+      from_id: "antigravity@local", to: recipient, type: "task",
+      effect: "write", body: "private approval body", home,
+    });
+    svc.claim(task.id, recipient, { home });
+    const runnerExecutor = vi.fn(async () => runnerOk());
+    const notifier = vi.fn<(notice: BridgeNotice) => void>();
+    const result = await pollAndProcessLocalLive({
+      home, recipient, consumerId: "wake:notify-approval-replay",
+      runner: "codex", notify: true, runnerExecutor, notifier,
+    });
+    expect(result[0]).toMatchObject({ action: "ack_only", business_state: "waiting_approval" });
+    expect(runnerExecutor).not.toHaveBeenCalled();
+    expect(notifier.mock.calls).toEqual([[{
+      recipient, message_id: task.id, task_id: task.task_id,
+      action: "ack_only", business_state: "waiting_approval", failure_class: null,
+    }]]);
+  });
+
+  it("sends one body-free notice per waiting or completed wake and ignores notifier errors", async () => {
+    const home = tmpHome();
+    const recipient = "codex@local";
+    const waiting = svc.send({
+      from_id: "antigravity@local", to: recipient, type: "task",
+      effect: "write", body: "private approval task body", home,
+    });
+    const complete = sendReceipt(home, "done");
+    const notices: BridgeNotice[] = [];
+    const opts = {
+      home, recipient, consumerId: "wake:notify-success", runner: "codex" as const,
+      notify: true,
+      notifier(notice: BridgeNotice) {
+        notices.push(notice);
+        throw new Error("notification unavailable");
+      },
+    };
+    const runnerExecutor: WakeRunnerExecutor = async (_config, event, item) => {
+      if (item.message.type === "task") svc.claim(event.message_id, recipient, { home });
+      else svc.ack(event.message_id, recipient, { home });
+      return runnerOk();
+    };
+    const results = await pollAndProcessLocalLive({ ...opts, runnerExecutor });
+    expect(results.map(({ action }) => action)).toEqual(["acked", "acked"]);
+    expect(notices).toEqual([
+      {
+        recipient, message_id: waiting.id, task_id: waiting.task_id,
+        action: "acked", business_state: "waiting_approval", failure_class: null,
+      },
+      {
+        recipient, message_id: complete.id, task_id: complete.task_id,
+        action: "acked", business_state: "complete", failure_class: null,
+      },
+    ]);
+    expect(svc.getStore(home).getOutboxCursor(opts.consumerId, recipient)).toBe(results[1].sequence);
+  });
+
+  it.each(["reject", "runner_failed", "verification_failed"] as const)(
+    "sends only control-plane metadata for %s",
+    async (action) => {
+      const home = tmpHome();
+      const recipient = "codex@local";
+      const body = "private wake text";
+      const msg = svc.send({
+        from_id: "antigravity@local", to: recipient, type: "task",
+        effect: action === "reject" ? "dangerous" : "read", body, home,
+      });
+      const notifier = vi.fn<(notice: BridgeNotice) => void>();
+      const runnerExecutor = vi.fn(async () => {
+        if (action === "runner_failed") throw new Error(body);
+        return runnerOk();
+      });
+      const opts = {
+        home, recipient, consumerId: "wake:notify-failure", runner: "codex" as const,
+        notify: true, notifier, runnerExecutor,
+      };
+      pollAndProcessLocal({ ...opts, dryRun: true });
+      expect(notifier).not.toHaveBeenCalled();
+      const results = await pollAndProcessLocalLive(opts);
+      expect(results[0].action).toBe(action);
+      expect(notifier.mock.calls).toEqual([[{
+        recipient, message_id: msg.id, task_id: msg.task_id, action,
+        business_state: "incomplete",
+        failure_class: action === "runner_failed" ? "runner_exit" : null,
+      }]]);
+    },
+  );
 });
